@@ -1,4 +1,3 @@
-// app/_layout.tsx
 import { useEffect, useState } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
@@ -16,7 +15,6 @@ export default function RootLayout() {
   const router = useRouter();
   const segments = useSegments();
 
-  // Listen for auth state changes
   useEffect(() => {
     const unsubscribe = onAuthChange((user) => {
       setUser(user);
@@ -25,22 +23,19 @@ export default function RootLayout() {
     return unsubscribe;
   }, []);
 
-  // Handle navigation based on auth state
   useEffect(() => {
     if (loading) return;
 
-    const inAuthGroup = segments[0] === '(auth)';
+    const currentRoute = segments[0];
+    const isAuthScreen = currentRoute === 'signin' || currentRoute === 'signup' || currentRoute === 'index';
 
-    if (!user && !inAuthGroup) {
-      // User is not signed in, redirect to login
-      router.replace('/(auth)/login');
-    } else if (user && inAuthGroup) {
-      // User is signed in but on auth screen, redirect to home
-      router.replace('/(tabs)');
+    if (!user && !isAuthScreen) {
+      router.replace('/');
+    } else if (user && isAuthScreen) {
+      router.replace('/home');
     }
   }, [user, loading, segments]);
 
-  // Show nothing while loading auth state
   if (loading) {
     return null;
   }
@@ -48,7 +43,10 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack>
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="signin" options={{ headerShown: false }} />
+        <Stack.Screen name="signup" options={{ headerShown: false }} />
+        <Stack.Screen name="home" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>

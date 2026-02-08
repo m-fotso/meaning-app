@@ -4,6 +4,7 @@ import {
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  updateProfile,
   User
 } from "firebase/auth";
 import { doc, setDoc } from "firebase/firestore";
@@ -21,6 +22,12 @@ export const signUp = async (email: string, password: string, displayName: strin
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
     
+    // Set displayName on Firebase Auth profile
+    await updateProfile(user, {
+      displayName: displayName
+    });
+
+    // Also store user data in Firestore
     await setDoc(doc(db, "users", user.uid), {
       email: email,
       displayName: displayName,
