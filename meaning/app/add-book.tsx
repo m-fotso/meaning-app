@@ -1,9 +1,9 @@
 
-import React, { useState } from 'react';
-import { StyleSheet, View, Pressable, Alert } from 'react-native';
-import * as DocumentPicker from 'expo-document-picker';
-import { ThemedView } from '@/components/themed-view';
 import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import * as DocumentPicker from 'expo-document-picker';
+import React, { useState } from 'react';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
 
 export default function AddBookScreen() {
 	const [pdf, setPdf] = useState<any>(null);
@@ -11,7 +11,7 @@ export default function AddBookScreen() {
 	const pickPdf = async () => {
 		try {
 			const res = await DocumentPicker.getDocumentAsync({ type: 'application/pdf' });
-			if (res.type === 'success') {
+			if (res.canceled === false) {
 				setPdf(res);
 			}
 		} catch (err) {
