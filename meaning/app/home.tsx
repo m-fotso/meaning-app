@@ -1,8 +1,10 @@
-import { StyleSheet, View, Text, ScrollView, Pressable } from 'react-native';
-import { Fonts } from '@/constants/theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { Fonts } from '@/constants/theme';
+import { useRouter } from 'expo-router';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 export default function HomeScreen() {
+  const router = useRouter();
   // Sample data - will be replaced with actual user data
   const userName = 'GINA';
   const currentReads = [
@@ -72,8 +74,9 @@ export default function HomeScreen() {
         <Pressable 
           style={styles.navItem}
           onPress={() => {
-            // TODO: Navigate to add/create
+            // TODO: Navigate to Add Book screen
             console.log('Add');
+            router.push('/add-book');
           }}
         >
           <IconSymbol name="plus.circle.fill" size={24} color="#11181C" />
