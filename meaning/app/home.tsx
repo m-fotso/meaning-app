@@ -1,18 +1,24 @@
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Fonts } from '@/constants/theme';
 import { useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 export default function HomeScreen() {
   const router = useRouter();
   // Sample data - will be replaced with actual user data
   const userName = 'GINA';
   const currentReads = [
-    { id: 1, title: 'Book 1' },
-    { id: 2, title: 'Book 2' },
-    { id: 3, title: 'Book 3' },
-    { id: 4, title: 'Book 4' },
+    { id: 1, title: 'Book 1', pdfPath: 'deliverable-marie/alice-in-wonderland.pdf' },
+    {
+      id: 2,
+      title: 'Book 2',
+      pdfPath:
+        'deliverable-marie/Terry Pratchett - Night Watch (Discworld, #29) (2003).pdf',
+    },
+    { id: 3, title: 'Book 3', pdfPath: null },
+    { id: 4, title: 'Book 4', pdfPath: null },
   ];
+  const bookCover = require('../deliverable-marie/Screenshot 2026-02-08 at 9.28.27 PM.png');
 
   return (
     <View style={styles.container}>
@@ -36,12 +42,21 @@ export default function HomeScreen() {
                 key={book.id} 
                 style={styles.bookCard}
                 onPress={() => {
-                  // TODO: Navigate to book reader
-                  console.log('Open book:', book.title);
+                  router.push({
+                    pathname: '/book/[id]' as any,
+                    params: {
+                      id: String(book.id),
+                      title: book.title,
+                      pdfPath: book.pdfPath ?? '',
+                    },
+                  });
                 }}
               >
                 <View style={styles.bookPlaceholder}>
-                  <Text style={styles.bookPlaceholderText}>{book.title}</Text>
+                  <Image source={bookCover} style={styles.bookImage} resizeMode="cover" />
+                  <View style={styles.bookTitleContainer}>
+                    <Text style={styles.bookPlaceholderText}>{book.title}</Text>
+                  </View>
                 </View>
               </Pressable>
             ))}
@@ -142,9 +157,16 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 12,
+    overflow: 'hidden',
+  },
+  bookImage: {
+    flex: 1,
+    width: '100%',
+  },
+  bookTitleContainer: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: '#FFFFFF',
   },
   bookPlaceholderText: {
     fontSize: 14,
