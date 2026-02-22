@@ -12,7 +12,7 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebaseConfig";
 
-type NoteData = {
+export type NoteData = {
   bookId: string;
   chapter?: number;
   highlightedText: string;
@@ -21,7 +21,7 @@ type NoteData = {
   color?: string;
 };
 
-type Note = NoteData & {
+export type Note = NoteData & {
   id: string;
   createdAt: string;
 };
@@ -63,7 +63,7 @@ export const getNotesForBook = async (userId: string, bookId: string, chapter?: 
     const notesRef = collection(db, "users", userId, "notes");
     let q;
     
-    if (chapter) {
+    if (chapter!== undefined) {
       q = query(notesRef, where("bookId", "==", bookId), where("chapter", "==", chapter));
     } else {
       q = query(notesRef, where("bookId", "==", bookId));

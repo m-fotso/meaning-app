@@ -5,6 +5,9 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { auth } from '@/services/firebaseConfig';
 import { logOut } from '@/services/authService';
 
+import { Link, router } from 'expo-router';
+
+
 export default function HomeScreen() {
   const [displayName, setDisplayName] = useState<string>('User');
   const [email, setEmail] = useState<string>('');
@@ -79,6 +82,16 @@ export default function HomeScreen() {
           <Pressable style={styles.logoutButton} onPress={handleLogout}>
             <Text style={styles.logoutButtonText}>Logout</Text>
           </Pressable>
+        </View>
+
+        <View>
+          {/* Dev Button - Temporary */}
+                  <Pressable 
+                    style={styles.devButton}
+                    onPress={() => router.push('/reader')}
+                  >
+                    <Text style={styles.devButtonText}>Dev (Skip to reader)</Text>
+                  </Pressable>
         </View>
       </ScrollView>
 
@@ -219,5 +232,21 @@ const styles = StyleSheet.create({
     padding: 8,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+   devButton: {
+    backgroundColor: '#E0E0E0',
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    width: '100%',
+    marginTop: 8,
+  },
+  devButtonText: {
+    color: '#666666',
+    fontSize: 14,
+    fontWeight: '500',
+    fontFamily: Fonts.sans,
   },
 });
