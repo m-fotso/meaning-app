@@ -1,16 +1,46 @@
+import { useState, useEffect } from 'react';
 import { StyleSheet, View, Text, ScrollView, Pressable } from 'react-native';
 import { Fonts } from '@/constants/theme';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { auth } from '@/services/firebaseConfig';
+import { logOut } from '@/services/authService';
+
+import { Link, router } from 'expo-router';
+
 
 export default function HomeScreen() {
+  const [displayName, setDisplayName] = useState<string>('User');
+  const [email, setEmail] = useState<string>('');
+
+  // Refresh user data on mount to get latest displayName
+  useEffect(() => {
+    const refreshUser = async () => {
+      const user = auth.currentUser;
+      if (user) {
+        // Reload user to get latest profile data (including displayName set during signup)
+        await user.reload();
+        
+        // Get the refreshed user
+        const refreshedUser = auth.currentUser;
+        setDisplayName(refreshedUser?.displayName || 'User');
+        setEmail(refreshedUser?.email || '');
+      }
+    };
+    refreshUser();
+  }, []);
+
   // Sample data - will be replaced with actual user data
-  const userName = 'GINA';
   const currentReads = [
     { id: 1, title: 'Book 1' },
     { id: 2, title: 'Book 2' },
     { id: 3, title: 'Book 3' },
     { id: 4, title: 'Book 4' },
   ];
+
+  const handleLogout = async () => {
+    await logOut();
+    // Navigation happens automatically via auth state listener in _layout.tsx
+  };
 
   return (
     <View style={styles.container}>
@@ -20,7 +50,8 @@ export default function HomeScreen() {
       >
         {/* Greeting */}
         <View style={styles.header}>
-          <Text style={styles.greeting}>HELLO {userName}</Text>
+          <Text style={styles.greeting}>HELLO {displayName.toUpperCase()}</Text>
+          <Text style={styles.email}>{email}</Text>
         </View>
 
         {/* Current Reads Section */}
@@ -44,6 +75,23 @@ export default function HomeScreen() {
               </Pressable>
             ))}
           </View>
+        </View>
+
+        {/* Logout Button */}
+        <View style={styles.section}>
+          <Pressable style={styles.logoutButton} onPress={handleLogout}>
+            <Text style={styles.logoutButtonText}>Logout</Text>
+          </Pressable>
+        </View>
+
+        <View>
+          {/* Dev Button - Temporary */}
+          <Pressable 
+            style={styles.devButton}
+            onPress={() => router.push('/reader')}
+          >
+            <Text style={styles.devButtonText}>Dev (Skip to reader)</Text>
+          </Pressable>
         </View>
       </ScrollView>
 
@@ -106,6 +154,12 @@ const styles = StyleSheet.create({
     color: '#11181C',
     letterSpacing: 1,
   },
+  email: {
+    fontSize: 14,
+    fontFamily: Fonts.sans,
+    color: '#666666',
+    marginTop: 4,
+  },
   section: {
     marginBottom: 32,
   },
@@ -149,6 +203,18 @@ const styles = StyleSheet.create({
     color: '#666666',
     textAlign: 'center',
   },
+  logoutButton: {
+    backgroundColor: '#FF3B30',
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  logoutButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    fontFamily: Fonts.sans,
+  },
   bottomNav: {
     position: 'absolute',
     bottom: 0,
@@ -166,5 +232,21 @@ const styles = StyleSheet.create({
     padding: 8,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+   devButton: {
+    backgroundColor: '#E0E0E0',
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    width: '100%',
+    marginTop: 8,
+  },
+  devButtonText: {
+    color: '#666666',
+    fontSize: 14,
+    fontWeight: '500',
+    fontFamily: Fonts.sans,
   },
 });

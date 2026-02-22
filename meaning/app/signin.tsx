@@ -1,17 +1,28 @@
-import { StyleSheet, View, Text, TextInput, Pressable, ScrollView } from 'react-native';
-import { Link, router } from 'expo-router';
+import { StyleSheet, View, Text, TextInput, Pressable, ScrollView, Alert } from 'react-native';
+import { Link } from 'expo-router';
 import { Fonts } from '@/constants/theme';
 import { useState } from 'react';
+import { signIn } from '@/services/authService';
 
 export default function SignInScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSignIn = () => {
-    // TODO: Implement sign-in functionality
-    console.log('Sign in:', { email, password });
-    // For now, just navigate to home (will be replaced with actual auth)
-    // router.push('/home');
+  const handleSignIn = async () => {
+    if (!email || !password) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    setLoading(true);
+    const result = await signIn(email, password);
+    setLoading(false);
+
+    if (!result.success) {
+      Alert.alert('Sign In Failed', result.error);
+    }
+    // Navigation happens automatically via auth state listener in _layout.tsx
   };
 
   return (
@@ -29,7 +40,7 @@ export default function SignInScreen() {
           <Text style={styles.label}>Email</Text>
           <TextInput
             style={styles.input}
-            placeholder="Value"
+            placeholder="Enter your email"
             placeholderTextColor="#999"
             value={email}
             onChangeText={setEmail}
@@ -44,7 +55,7 @@ export default function SignInScreen() {
           <Text style={styles.label}>Password</Text>
           <TextInput
             style={styles.input}
-            placeholder="Value"
+            placeholder="Enter your password"
             placeholderTextColor="#999"
             value={password}
             onChangeText={setPassword}
@@ -55,8 +66,14 @@ export default function SignInScreen() {
         </View>
 
         {/* Sign In Button */}
-        <Pressable style={styles.signInButton} onPress={handleSignIn}>
-          <Text style={styles.signInButtonText}>Sign In</Text>
+        <Pressable 
+          style={[styles.signInButton, loading && styles.buttonDisabled]} 
+          onPress={handleSignIn}
+          disabled={loading}
+        >
+          <Text style={styles.signInButtonText}>
+            {loading ? 'Signing In...' : 'Sign In'}
+          </Text>
         </Pressable>
 
         {/* Forgot Password Link */}
@@ -127,6 +144,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     marginTop: 8,
+  },
+  buttonDisabled: {
+    backgroundColor: '#666666',
   },
   signInButtonText: {
     color: '#FFFFFF',
