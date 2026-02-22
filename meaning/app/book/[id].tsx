@@ -70,7 +70,8 @@ export default function BookDetailScreen() {
   }, [loading, startTime]);
 
   return (
-    <ScrollView style={styles.scrollView} contentContainerStyle={styles.container}>
+    <View style={styles.screen}>
+      <ScrollView style={styles.scrollView} contentContainerStyle={styles.container}>
       <Pressable onPress={() => router.back()} style={styles.backButton}>
         <Text style={styles.backText}>Back</Text>
       </Pressable>
@@ -113,11 +114,24 @@ export default function BookDetailScreen() {
         !loading &&
         !error && <Text style={styles.subtitle}>Book detail page</Text>
       )}
-    </ScrollView>
+      </ScrollView>
+      <View style={styles.actionBar}>
+        <Pressable style={styles.actionButton} onPress={() => {}}>
+          <Text style={styles.actionText}>Annotate</Text>
+        </Pressable>
+        <Pressable style={styles.actionButton} onPress={() => {}}>
+          <Text style={styles.actionText}>Highlight</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
   scrollView: {
     flex: 1,
     backgroundColor: '#000000',
@@ -126,6 +140,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingTop: 60,
     paddingHorizontal: 24,
+    paddingBottom: 120,
     backgroundColor: '#000000',
     alignItems: 'center',
   },
@@ -194,5 +209,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#FF6B6B',
     textAlign: 'center',
+  },
+  actionBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    backgroundColor: '#000000',
+    borderTopWidth: 1,
+    borderTopColor: '#222222',
+  },
+  actionButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+  },
+  actionText: {
+    color: '#111111',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
