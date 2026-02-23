@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { User } from 'firebase/auth';
@@ -9,6 +10,9 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { onAuthChange } from '@/services/authService';
 
 export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    CormorantGaramond: require('../assets/fonts/CormorantGaramond-Regular.ttf'),
+  });
   const colorScheme = useColorScheme();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -37,6 +41,10 @@ export default function RootLayout() {
   }, [user, loading, segments]);
 
   if (loading) {
+    return null;
+  }
+
+  if (!fontsLoaded) {
     return null;
   }
 
