@@ -3,6 +3,15 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Slider from '@react-native-community/slider';
 import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { auth } from '../../services/firebaseConfig';
+import {
+  generateTTS,
+  uploadAudio,
+  saveTTSMetadata,
+  getCachedAudio,
+  TTS_VOICES,
+  type TTSVoice,
+} from '../../services/ttsService';
 
 export default function BookDetailScreen() {
   const router = useRouter();
@@ -39,6 +48,96 @@ export default function BookDetailScreen() {
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
+  // TTS state
+  const [selectedVoice, setSelectedVoice] = useState<TTSVoice>('Normal');
+  const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [ttsLoading, setTtsLoading] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setIsPlaying(false);
+  }, [currentPage]);
+
+  const handleListen = async () => {
+    if (isPlaying && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      setIsPlaying(false);
+      return;
+    }
+
+    const pageText = pages[currentPage];
+    if (!pageText) return;
+
+    const userId = auth.currentUser?.uid;
+    const bookId = id ?? 'unknown';
+    console.log('[TTS] userId:', userId, 'bookId:', bookId, 'page:', currentPage, 'voice:', selectedVoice);
+
+    setTtsLoading(true);
+    try {
+      // Check cache first
+      let audioUrl: string | null = null;
+      if (userId) {
+        try {
+          audioUrl = await getCachedAudio(userId, bookId, currentPage, selectedVoice);
+          if (audioUrl) {
+            console.log('[TTS] Playing from cache');
+          }
+        } catch (e) {
+          console.warn('[TTS] Cache lookup failed:', e);
+        }
+      }
+
+      let audioBlob: Blob | null = null;
+      if (!audioUrl) {
+        console.log('[TTS] Generating fresh audio...');
+        audioBlob = await generateTTS(pageText, selectedVoice);
+        audioUrl = URL.createObjectURL(audioBlob);
+      }
+
+      // Play immediately — don't wait for upload
+      const audio = new window.Audio(audioUrl);
+      audioRef.current = audio;
+      audio.onended = () => setIsPlaying(false);
+      audio.onerror = () => setIsPlaying(false);
+      await audio.play();
+      setIsPlaying(true);
+      setTtsLoading(false);
+
+      // Upload to Firebase in background (non-blocking)
+      if (audioBlob && userId) {
+        console.log('[TTS] Uploading to Firebase...');
+        uploadAudio(userId, bookId, currentPage, selectedVoice, audioBlob)
+          .then((url) => {
+            console.log('[TTS] Uploaded, saving metadata...');
+            return saveTTSMetadata(userId, bookId, currentPage, selectedVoice, url);
+          })
+          .then(() => console.log('[TTS] Cached successfully'))
+          .catch((e) => console.error('[TTS] Cache upload failed:', e));
+      } else if (!userId) {
+        console.log('[TTS] Not logged in — skipping cache');
+      }
+    } catch (err) {
+      console.error('TTS error:', err);
+      setError(err instanceof Error ? err.message : 'TTS playback failed');
+      setTtsLoading(false);
+    }
+  };
+
   useEffect(() => {
     const path = typeof pdfPath === 'string' ? pdfPath : '';
     if (!path) {
@@ -67,7 +166,28 @@ export default function BookDetailScreen() {
           .split(/--\s*\d+\s+of\s+\d+\s*--/g)
           .map((part: string) => part.trim())
           .filter(Boolean);
-        const nextPages = parts.length ? parts : rawText ? [rawText] : [];
+        // If no page markers found, split long text into ~2000-char pages at paragraph breaks
+        let nextPages: string[];
+        if (parts.length > 1) {
+          nextPages = parts;
+        } else if (rawText.length > 3000) {
+          const PAGE_SIZE = 2000;
+          const paragraphs = rawText.split(/\n\s*\n/);
+          const builtPages: string[] = [];
+          let current = '';
+          for (const para of paragraphs) {
+            if (current.length + para.length + 2 > PAGE_SIZE && current) {
+              builtPages.push(current.trim());
+              current = para;
+            } else {
+              current = current ? `${current}\n\n${para}` : para;
+            }
+          }
+          if (current.trim()) builtPages.push(current.trim());
+          nextPages = builtPages.length ? builtPages : [rawText];
+        } else {
+          nextPages = rawText ? [rawText] : [];
+        }
         setPages(nextPages);
         setCurrentPage(0);
         setAnnotationsByPage({});
@@ -576,6 +696,23 @@ export default function BookDetailScreen() {
           <Text style={styles.actionText}>Annotate</Text>
         </Pressable>
         <Pressable
+          style={[styles.actionButton, ttsLoading && styles.actionButtonDisabled]}
+          onPress={handleListen}
+          disabled={ttsLoading || !pages.length}
+        >
+          <Text style={styles.actionText}>
+            {ttsLoading ? 'Loading...' : isPlaying ? 'Stop' : 'Listen'}
+          </Text>
+        </Pressable>
+        {(isPlaying || ttsLoading) ? (
+          <Pressable
+            style={styles.voiceButton}
+            onPress={() => setShowVoicePicker(true)}
+          >
+            <Text style={styles.voiceButtonText}>{selectedVoice}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
           style={[
             styles.actionButton,
             currentPage === pages.length - 1 && styles.actionButtonDisabled,
@@ -586,6 +723,42 @@ export default function BookDetailScreen() {
           <Text style={styles.actionText}>Next</Text>
         </Pressable>
       </View>
+
+      {/* Voice picker modal */}
+      <Modal
+        visible={showVoicePicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowVoicePicker(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowVoicePicker(false)}>
+          <View style={styles.voicePickerPanel}>
+            <Text style={styles.voicePickerTitle}>Select Voice</Text>
+            {TTS_VOICES.map((voice) => (
+              <Pressable
+                key={voice}
+                style={[
+                  styles.voiceOption,
+                  voice === selectedVoice && styles.voiceOptionSelected,
+                ]}
+                onPress={() => {
+                  setSelectedVoice(voice);
+                  setShowVoicePicker(false);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.voiceOptionText,
+                    voice === selectedVoice && styles.voiceOptionTextSelected,
+                  ]}
+                >
+                  {voice}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -968,5 +1141,56 @@ const styles = StyleSheet.create({
   popupCancelText: {
     color: '#CCCCCC',
     fontSize: 14,
+  },
+  voiceButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: '#333333',
+  },
+  voiceButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  voicePickerPanel: {
+    width: 260,
+    backgroundColor: '#111111',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#222222',
+  },
+  voicePickerTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  voiceOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  voiceOptionSelected: {
+    backgroundColor: '#FFFFFF',
+  },
+  voiceOptionText: {
+    color: '#CCCCCC',
+    fontSize: 14,
+  },
+  voiceOptionTextSelected: {
+    color: '#111111',
+    fontWeight: '600',
   },
 });

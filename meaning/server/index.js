@@ -2,7 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const express = require('express');
 const multer = require('multer');
-const { PDFParse } = require('pdf-parse');
+const pdfParse = require('pdf-parse');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -46,14 +46,12 @@ app.post('/parse', upload.single('file'), async (req, res) => {
       });
     }
 
-    const parser = new PDFParse({ data: buffer });
-    const result = await parser.getText();
-    await parser.destroy();
+    const result = await pdfParse(buffer);
     const limit = Number.parseInt(req.query.limit ?? '', 10);
     const text = Number.isFinite(limit) && limit > 0 ? result.text.slice(0, limit) : result.text;
 
     res.json({
-      pages: result.total ?? result.numpages ?? null,
+      pages: result.numpages ?? null,
       text,
     });
   } catch (error) {
