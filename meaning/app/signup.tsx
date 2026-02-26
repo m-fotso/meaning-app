@@ -1,17 +1,40 @@
-import { StyleSheet, View, Text, TextInput, Pressable, ScrollView } from 'react-native';
+import { StyleSheet, View, Text, TextInput, Pressable, ScrollView, Alert } from 'react-native';
 import { Link } from 'expo-router';
 import { Fonts } from '@/constants/theme';
 import { useState } from 'react';
+import { signUp } from '@/services/authService';
 
 export default function SignUpScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [agreed, setAgreed] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleRegister = () => {
-    // TODO: Implement registration functionality
-    console.log('Register:', { email, password, agreed });
-    // For now, just log (will be replaced with actual auth)
+  const handleRegister = async () => {
+    if (!email || !password || !displayName) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    if (!agreed) {
+      Alert.alert('Error', 'Please agree to the terms and conditions');
+      return;
+    }
+
+    if (password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters');
+      return;
+    }
+
+    setLoading(true);
+    const result = await signUp(email, password, displayName);
+    setLoading(false);
+
+    if (!result.success) {
+      Alert.alert('Registration Failed', result.error);
+    }
+    // Navigation happens automatically via auth state listener in _layout.tsx
   };
 
   return (
@@ -24,12 +47,25 @@ export default function SignUpScreen() {
 
       {/* Form Container - Dark Theme */}
       <View style={styles.formContainer}>
+        {/* Display Name Input */}
+        <View style={styles.inputContainer}>
+          <Text style={styles.label}>Display Name</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter your name"
+            placeholderTextColor="#999"
+            value={displayName}
+            onChangeText={setDisplayName}
+            autoCapitalize="words"
+          />
+        </View>
+
         {/* Email Input */}
         <View style={styles.inputContainer}>
           <Text style={styles.label}>Email</Text>
           <TextInput
             style={styles.input}
-            placeholder="Value"
+            placeholder="Enter your email"
             placeholderTextColor="#999"
             value={email}
             onChangeText={setEmail}
@@ -44,7 +80,7 @@ export default function SignUpScreen() {
           <Text style={styles.label}>Password</Text>
           <TextInput
             style={styles.input}
-            placeholder="Value"
+            placeholder="Enter your password (min 6 chars)"
             placeholderTextColor="#999"
             value={password}
             onChangeText={setPassword}
@@ -62,12 +98,18 @@ export default function SignUpScreen() {
           >
             {agreed && <View style={styles.checkboxInner} />}
           </Pressable>
-          <Text style={styles.checkboxLabel}>Label Description</Text>
+          <Text style={styles.checkboxLabel}>I agree to the Terms and Conditions</Text>
         </View>
 
         {/* Register Button */}
-        <Pressable style={styles.registerButton} onPress={handleRegister}>
-          <Text style={styles.registerButtonText}>Register</Text>
+        <Pressable 
+          style={[styles.registerButton, loading && styles.buttonDisabled]} 
+          onPress={handleRegister}
+          disabled={loading}
+        >
+          <Text style={styles.registerButtonText}>
+            {loading ? 'Creating Account...' : 'Register'}
+          </Text>
         </Pressable>
       </View>
 
@@ -153,6 +195,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#FFFFFF',
     fontFamily: Fonts.sans,
+    flex: 1,
   },
   registerButton: {
     backgroundColor: '#D0D0D0', // Light grey
@@ -160,6 +203,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     marginTop: 8,
+  },
+  buttonDisabled: {
+    backgroundColor: '#888888',
   },
   registerButtonText: {
     color: '#11181C',
