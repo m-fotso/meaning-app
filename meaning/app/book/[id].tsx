@@ -3,6 +3,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Slider from '@react-native-community/slider';
 import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { auth } from '../../services/firebaseConfig';
+import { getBook, updateBook } from '../../services/bookService';
 
 export default function BookDetailScreen() {
   const router = useRouter();
@@ -36,6 +38,10 @@ export default function BookDetailScreen() {
   } | null>(null);
   // Search modal: show YouTube/Google links for selected text
   const [searchModal, setSearchModal] = useState<{ query: string } | null>(null);
+  // Debounce timer for saving page progress to Firestore
+  const savePageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [savedPageRestored, setSavedPageRestored] = useState(false);
+
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
@@ -82,6 +88,53 @@ export default function BookDetailScreen() {
 
     fetchText();
   }, [pdfPath]);
+
+  // Restore saved page from Firestore after pages are loaded
+  useEffect(() => {
+    if (pages.length === 0 || savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) {
+      setSavedPageRestored(true);
+      return;
+    }
+    getBook(userId, bookId).then((result) => {
+      if (result.success && result.book) {
+        const saved = result.book.currentPage;
+        if (saved > 0 && saved < pages.length) {
+          setCurrentPage(saved);
+        }
+        // Save totalPages if it changed
+        if (result.book.totalPages !== pages.length) {
+          updateBook(userId, bookId, { totalPages: pages.length });
+        }
+      } else {
+        // Book doc doesn't exist yet — save totalPages
+        updateBook(userId, bookId, { totalPages: pages.length }).catch(() => {});
+      }
+      setSavedPageRestored(true);
+    });
+  }, [pages.length, savedPageRestored, id]);
+
+  // Debounced save of currentPage to Firestore on page change
+  useEffect(() => {
+    if (!savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) return;
+
+    if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    savePageTimerRef.current = setTimeout(() => {
+      updateBook(userId, bookId, {
+        currentPage,
+        lastReadAt: new Date().toISOString(),
+      });
+    }, 500);
+
+    return () => {
+      if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    };
+  }, [currentPage, savedPageRestored, id]);
 
   useEffect(() => {
     if (!loading || startTime === null) {
