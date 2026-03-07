@@ -55,7 +55,7 @@ export default function BookDetailScreen() {
   // Swipe and animation refs
   const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
   const panResponderRef = useRef<PanResponderInstance | null>(null);
-
+  /// Chapter detection from page text
   const getNewestChapterPage = (pages: string[]): number => {
     let newestPage = -1;
 
@@ -69,7 +69,8 @@ export default function BookDetailScreen() {
     console.log(newestPage);
     return newestPage;
   };
-
+  
+  // Get list of page indices that contain chapter headings, for chapter note association and quick navigation
   const getChapterPages = (pages: string[]): number[] => {
     const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
     const chapterPages: number[] = [];
