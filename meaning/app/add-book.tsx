@@ -4,10 +4,10 @@ import { ThemedView } from '@/components/themed-view';
 import * as DocumentPicker from 'expo-document-picker';
 import React, { useState } from 'react';
 import { Alert, Pressable, StyleSheet, View } from 'react-native';
+import { uploadPdfForParsing } from './api/parsePdfClient';
 
 export default function AddBookScreen() {
 	const [pdf, setPdf] = useState<any>(null);
-
 	const pickPdf = async () => {
 		try {
 			const res = await DocumentPicker.getDocumentAsync({ type: 'application/pdf' });
@@ -27,7 +27,14 @@ export default function AddBookScreen() {
 		}
 
 		// Placeholder: integrate real upload here.
-		Alert.alert('Selected PDF', `${pdf.name}\n${pdf.size ? `${pdf.size} bytes` : ''}`);
+        Alert.alert('Selected PDF', `${pdf.name}\n${pdf.size ? `${pdf.size} bytes` : ''}`);
+				try {
+					const result = await uploadPdfForParsing(pdf.uri, pdf.name);
+					Alert.alert('Parse result', JSON.stringify(result));
+				} catch (e: any) {
+					console.error('Upload/parse error', e);
+					Alert.alert('Error', e?.message || 'Parsing failed');
+				}
 	};
 
 	return (
@@ -113,4 +120,5 @@ const styles = StyleSheet.create({
 		opacity: 0.5,
 	},
 });
+
 
