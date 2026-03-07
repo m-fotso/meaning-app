@@ -3,6 +3,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Slider from '@react-native-community/slider';
 import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { auth } from '@/services/firebaseConfig';
+import { deleteNote, getNotesForBook, saveNote } from '@/services/notesService';
 
 export default function BookDetailScreen() {
   const router = useRouter();
@@ -68,10 +70,32 @@ export default function BookDetailScreen() {
           .map((part: string) => part.trim())
           .filter(Boolean);
         const nextPages = parts.length ? parts : rawText ? [rawText] : [];
+        
+        const userId = auth.currentUser?.uid;
+        if (userId) {
+          const result = await getNotesForBook(userId, String(id));
+          if (result.success) {
+            const annotations: Record<number, string[]> = {};
+            const highlights: Record<number, Array<{ id: string; text: string }>> = {};
+
+            for (const note of result.notes ?? []) {
+              const page = note.pageNumber ?? 0;
+              if (note.userNote) {
+                annotations[page] = [...(annotations[page] ?? []), note.userNote];
+              }
+              if (note.highlightedText) {
+                highlights[page] = [...(highlights[page] ?? []), { id: note.id, text: note.highlightedText }];
+              }
+            }
+
+            setAnnotationsByPage(annotations);
+            setRangeHighlightsByPage(highlights);
+          }
+        }
+
         setPages(nextPages);
         setCurrentPage(0);
-        setAnnotationsByPage({});
-        setRangeHighlightsByPage({});
+
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load PDF text.');
       } finally {
@@ -93,18 +117,30 @@ export default function BookDetailScreen() {
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
 
-  const handleAddAnnotation = () => {
-    const trimmed = newAnnotation.trim();
-    if (!trimmed.length) {
-      return;
-    }
-    setAnnotationsByPage((prev) => ({
-      ...prev,
-      [currentPage]: [...(prev[currentPage] ?? []), trimmed],
-    }));
-    setNewAnnotation('');
-    setIsAddingAnnotation(false);
-  };
+  const handleAddAnnotation = async () => {
+  const trimmed = newAnnotation.trim();
+  if (!trimmed.length) return;
+
+  const userId = auth.currentUser?.uid;
+  if (!userId) return;
+
+  const result = await saveNote(userId, {
+    bookId: String(id),
+    pageNumber: currentPage,
+    highlightedText: '',
+    userNote: trimmed,
+  });
+
+  if (!result.success) return;
+
+  setAnnotationsByPage((prev) => ({
+    ...prev,
+    [currentPage]: [...(prev[currentPage] ?? []), trimmed],
+  }));
+  setNewAnnotation('');
+  setIsAddingAnnotation(false);
+};
+
 
   const maxChunkLen = 120;
 
@@ -145,16 +181,28 @@ export default function BookDetailScreen() {
     [splitLineIntoSegments]
   );
 
-  const addRangeHighlight = (text: string) => {
-    const id = `hl-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const addRangeHighlight = async (text: string) => {
+    const userId = auth.currentUser?.uid;
+    if (!userId) return;
+
+    const result = await saveNote(userId, {
+      bookId: String(id),
+      pageNumber: currentPage,
+      highlightedText: text,
+    });
+
+    if (!result.success) return;
+
     setRangeHighlightsByPage((prev) => ({
       ...prev,
-      [currentPage]: [...(prev[currentPage] ?? []), { id, text }],
+      [currentPage]: [...(prev[currentPage] ?? []), { id: result.noteId!, text }],
     }));
     setSelectionPopup(null);
   };
 
-  const removeRangeHighlight = (id: string) => {
+  const removeRangeHighlight = async (id: string) => {
+    const userId = auth.currentUser?.uid;
+    if (userId) await deleteNote(userId, id);
     setRangeHighlightsByPage((prev) => ({
       ...prev,
       [currentPage]: (prev[currentPage] ?? []).filter((h) => h.id !== id),
