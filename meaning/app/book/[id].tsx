@@ -1,8 +1,8 @@
+import Slider from '@react-native-community/slider';
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Slider from '@react-native-community/slider';
-import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 export default function BookDetailScreen() {
   const router = useRouter();
@@ -11,6 +11,7 @@ export default function BookDetailScreen() {
     id?: string;
     pdfPath?: string;
   }>();
+  const [imageUri, setImageUri] = useState<string | null>(null);
   const displayTitle = title ?? `Book ${id ?? ''}`;
   const [pages, setPages] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
@@ -24,6 +25,33 @@ export default function BookDetailScreen() {
   const [startTime, setStartTime] = useState<number | null>(null);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
 
+  const getNewestChapterPage = (pages: string[]): number => {
+    let newestPage = -1;
+
+    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
+
+    pages.forEach((pageText, index) => {
+      if (chapterRegex.test(pageText)) {
+        newestPage = index;
+      }
+    });
+    console.log(newestPage);
+    return newestPage;
+  };
+
+  const getChapterPages = (pages: string[]): number[] => {
+    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
+    const chapterPages: number[] = [];
+
+    pages.forEach((pageText, index) => {
+      if (chapterRegex.test(pageText)) {
+        chapterPages.push(index);
+      }
+    });
+    console.log(chapterPages);
+    return chapterPages;
+  };
+
   // Range highlights: page -> list of { id, text } (exact text only, not full segment)
   const [rangeHighlightsByPage, setRangeHighlightsByPage] = useState<
     Record<number, Array<{ id: string; text: string }>>
@@ -36,6 +64,7 @@ export default function BookDetailScreen() {
   } | null>(null);
   // Search modal: show YouTube/Google links for selected text
   const [searchModal, setSearchModal] = useState<{ query: string } | null>(null);
+  
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
@@ -45,6 +74,7 @@ export default function BookDetailScreen() {
       return;
     }
 
+    //function for fetching text from the backend and splitting into pages, with error handling and loading state
     const fetchText = async () => {
       try {
         setLoading(true);
@@ -72,6 +102,8 @@ export default function BookDetailScreen() {
         setCurrentPage(0);
         setAnnotationsByPage({});
         setRangeHighlightsByPage({});
+        getChapterPages(nextPages);
+        getNewestChapterPage(nextPages);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load PDF text.');
       } finally {
@@ -189,6 +221,26 @@ export default function BookDetailScreen() {
     const sel = window.getSelection?.();
     return (sel?.toString?.() ?? '').trim();
   };
+
+  const openImageGeneration = async (prompt: string) => {
+    try {
+      const response = await fetch("http://localhost:5050/generate-image",{
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt: "alice in wonderland",
+        })
+      });
+      const data = (await response.json());
+      setImageUri(data.image);
+    } catch (err) {
+      console.error("Image generation failed", err);
+    }
+  
+  }
+
 
   // On web, keep the last non-empty selection in a ref so the Selection button can use it
   // (clicking the button clears the selection before onPress runs)
@@ -543,10 +595,22 @@ export default function BookDetailScreen() {
                   >
                     <Text style={styles.popupButtonText}>Google</Text>
                   </Pressable>
+                  <Pressable
+                    style={styles.popupButton}
+                    onPress={() => openImageGeneration(searchModal.query)}
+                  >
+                    <Text style={styles.popupButtonText}>Generate Image</Text>
+                  </Pressable>
                 </View>
                 <Pressable style={styles.popupCancelButton} onPress={() => setSearchModal(null)}>
                   <Text style={styles.popupCancelText}>Close</Text>
                 </Pressable>
+                {imageUri && (
+                  <Image
+                    source={{ uri: imageUri }}
+                    style={{ width: 300, height: 300 }}
+                  />
+                )}
               </>
             ) : null}
           </Pressable>

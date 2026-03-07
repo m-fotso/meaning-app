@@ -1,6 +1,6 @@
-import { StyleSheet, View, Pressable, Text } from 'react-native';
-import { Link, router } from 'expo-router';
 import { Fonts } from '@/constants/theme';
+import { Link, router } from 'expo-router';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 export default function WelcomeScreen() {
   return (
@@ -33,8 +33,13 @@ export default function WelcomeScreen() {
 
         {/* Dev Button - Temporary */}
         <Pressable 
-          style={styles.devButton}
-          onPress={() => router.push('/home')}
+        style={styles.devButton} 
+        onPress={() => {
+          if (typeof document !== 'undefined') {
+            (document.activeElement as HTMLElement | null)?.blur();
+          }
+          router.push('/home');
+        }}
         >
           <Text style={styles.devButtonText}>Dev (Skip to Home)</Text>
         </Pressable>

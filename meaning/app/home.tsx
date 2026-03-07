@@ -45,7 +45,7 @@ export default function HomeScreen() {
     await logOut();
     // Navigation happens automatically via auth state listener in _layout.tsx
   };
-  const bookCover = require('../deliverable-marie/Screenshot 2026-02-08 at 9.28.27 PM.png');
+  const bookCover = require('../deliverable-marie/alice-in-wonderland.png');
 
   return (
     <View style={styles.container}>

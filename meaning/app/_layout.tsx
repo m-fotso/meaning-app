@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { User } from 'firebase/auth';
+import { useEffect, useState } from 'react';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -31,13 +31,15 @@ export default function RootLayout() {
     if (loading) return;
 
     const currentRoute = segments[0];
-    const isAuthScreen = currentRoute === 'signin' || currentRoute === 'signup' || currentRoute === 'index';
+    const isAuthScreen = currentRoute === 'signin' || currentRoute === 'signup' || currentRoute === 'home' || currentRoute === 'display';
 
+   
     if (!user && !isAuthScreen) {
       router.replace('/');
     } else if (user && isAuthScreen) {
       router.replace('/home');
     }
+   
   }, [user, loading, segments]);
 
   if (loading) {
@@ -56,6 +58,7 @@ export default function RootLayout() {
         <Stack.Screen name="signup" options={{ headerShown: false }} />
         <Stack.Screen name="home" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="display" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>
       <StatusBar style="auto" />

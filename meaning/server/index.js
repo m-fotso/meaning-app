@@ -1,12 +1,20 @@
+require("dotenv").config({ path: "./server/key.env" });
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const express = require('express');
 const multer = require('multer');
 const { PDFParse } = require('pdf-parse');
+const OpenAI = require("openai");
+
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 const port = process.env.PORT || 5050;
+console.log("API KEY LOADED:", process.env.OPENAI_API_KEY ? "YES" : "NO");
+console.log("Working directory:", process.cwd());
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => {
@@ -60,6 +68,43 @@ app.post('/parse', upload.single('file'), async (req, res) => {
     res.status(500).json({ error: error?.message ?? 'Failed to parse PDF.' });
   }
 });
+
+app.post("/generate-image", async (req, res) => {
+  try {
+    const { prompt } = req.body;
+
+    /*const response = await openai.images.generate({
+      model: "gpt-image-1",
+      prompt: prompt,
+      size: "1024x1024"
+    });*/
+    const response = await fetch(
+    'https://gateway.pixazo.ai/studio-ghibli/v1/studio-ghibli/generate',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Ocp-Apim-Subscription-Key': process.env.PIXAZO_API_KEY
+      },
+      body: JSON.stringify({
+        prompt: prompt
+      })
+    }
+    );
+    const result = await response.json();
+    console.log(result);
+    const base64Image = response.data[0].base64Image;
+    console.log(base64Image);
+    res.json({
+      image: `data:image/png;base64,${base64Image}`
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Image generation failed" });
+  }
+});
+
 
 app.listen(port, () => {
   // eslint-disable-next-line no-console
