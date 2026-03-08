@@ -2,12 +2,35 @@ import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Slider from '@react-native-community/slider';
-import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Animated,
+  Dimensions,
+  Linking,
+  Modal,
+  PanResponder,
+  PanResponderGestureState,
+  PanResponderInstance,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { auth } from '../../services/firebaseConfig';
 import { getBook, updateBook } from '../../services/bookService';
+import { getNotesForBook, Note } from '@/services/notesService';
+import { useAuth } from '@/app/context/AuthContext';
+import { ChapterNote } from '@/components/chapterNote';
+
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const MENU_WIDTH = Math.min(320, SCREEN_WIDTH * 0.8);
 
 export default function BookDetailScreen() {
   const router = useRouter();
+  const { user, initializing } = useAuth();
   const { title, id, pdfPath } = useLocalSearchParams<{
     title?: string;
     id?: string;
@@ -24,7 +47,14 @@ export default function BookDetailScreen() {
   const [loading, setLoading] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
+  const [fetchedNotes, setFetchedNotes] = useState<Note[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
+  const [showChapterNote, setShowChapterNote] = useState(false);
+
+  // Swipe and animation refs
+  const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
+  const panResponderRef = useRef<PanResponderInstance | null>(null);
 
   // Range highlights: page -> list of { id, text } (exact text only, not full segment)
   const [rangeHighlightsByPage, setRangeHighlightsByPage] = useState<
@@ -145,6 +175,60 @@ export default function BookDetailScreen() {
     }, 200);
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
+
+  // Animation effect for menu slide-in/out
+  useEffect(() => {
+    Animated.timing(menuAnimRef, {
+      toValue: showAnnotations ? 1 : 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [showAnnotations, menuAnimRef]);
+
+  // Fetch notes from service
+  useEffect(() => {
+    if (initializing) {
+      return;
+    }
+    if (!user || !id) {
+      setFetchedNotes([]);
+      return;
+    }
+
+    let mounted = true;
+    const fetchNotes = async () => {
+      setNotesLoading(true);
+      const result = await getNotesForBook(user.uid, String(id), currentPage);
+      if (!mounted) return;
+      if (result.success && result.notes) {
+        setFetchedNotes(result.notes);
+      } else {
+        console.error('Failed to fetch notes:', result.error);
+        setFetchedNotes([]);
+      }
+      setNotesLoading(false);
+    };
+    fetchNotes();
+
+    return () => {
+      mounted = false;
+    };
+  }, [user, initializing, id, currentPage]);
+
+  // Initialize PanResponder for left-swipe detection
+  useEffect(() => {
+    panResponderRef.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
+        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
+      },
+      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
+        if (gestureState.dx < -50) {
+          setShowAnnotations(true);
+        }
+      },
+    });
+  }, []);
 
   const handleAddAnnotation = () => {
     const trimmed = newAnnotation.trim();
@@ -393,6 +477,10 @@ export default function BookDetailScreen() {
 
   return (
     <View style={styles.screen}>
+      {/* Right-edge invisible swipe zone for gesture detection */}
+      {panResponderRef.current && (
+        <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
+      )}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.container}
@@ -401,6 +489,11 @@ export default function BookDetailScreen() {
       <Pressable onPress={() => router.back()} style={styles.backButton}>
         <Text style={styles.backText}>Back</Text>
       </Pressable>
+      
+
+
+
+
       <Text style={styles.title}>{displayTitle}</Text>
         {(annotationsByPage[currentPage]?.length ?? 0) > 0 ? (
           <Pressable
@@ -438,8 +531,25 @@ export default function BookDetailScreen() {
       )}
       </ScrollView>
       {showAnnotations ? (
-        <View style={styles.annotationsOverlay}>
-          <View style={styles.annotationsPanel}>
+        <>
+          <Pressable style={styles.overlay} onPress={() => setShowAnnotations(false)} />
+          <View style={styles.annotationsOverlay}>
+            <Animated.View
+              style={[
+                styles.annotationsPanel,
+                {
+                  width: MENU_WIDTH,
+                  transform: [
+                    {
+                      translateX: menuAnimRef.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [MENU_WIDTH, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            >
             <View style={styles.annotationsHeader}>
               <View>
                 <Text style={styles.annotationsTitle}>Annotations</Text>
@@ -507,6 +617,18 @@ export default function BookDetailScreen() {
               ) : (
                 <Text style={styles.annotationsEmpty}>No annotations yet.</Text>
               )}
+              {notesLoading && <Text style={styles.loadingText}>Loading notes…</Text>}
+              {!notesLoading && fetchedNotes.length > 0 && (
+                <View style={styles.fetchedNotesSection}>
+                  <Text style={styles.fetchedNotesTitle}>Service Notes</Text>
+                  {fetchedNotes.map((note) => (
+                    <View key={note.id} style={styles.fetchedNoteCard}>
+                      <Text style={styles.fetchedNoteText}>{note.highlightedText}</Text>
+                      {note.userNote && <Text style={styles.noteContent}>{note.userNote}</Text>}
+                    </View>
+                  ))}
+                </View>
+              )}
             </ScrollView>
             {currentRangeHighlights.length > 0 ? (
               <View style={styles.highlightsSection}>
@@ -544,9 +666,29 @@ export default function BookDetailScreen() {
                 thumbTintColor="#FFFFFF"
               />
             </View>
+            </Animated.View>
           </View>
-        </View>
+        </>
       ) : null}
+
+      {/* Chapter Notes Modal */}
+      <ChapterNote
+        visible={showChapterNote}
+        onClose={() => setShowChapterNote(false)}
+        userId={user?.uid ?? ''}
+        bookId={String(id)}
+        currentPage={currentPage}
+        onSaveSuccess={() => {
+          // Refetch notes after save
+          if (user && id) {
+            getNotesForBook(user.uid, String(id), currentPage).then((result) => {
+              if (result.success && result.notes) {
+                setFetchedNotes(result.notes);
+              }
+            });
+          }
+        }}
+      />
 
       {/* Selection pop-up: Highlight / Copy / Search */}
       <Modal visible={selectionPopup !== null} transparent animationType="fade">
@@ -1021,5 +1163,54 @@ const styles = StyleSheet.create({
   popupCancelText: {
     color: '#CCCCCC',
     fontSize: 14,
+  },
+  swipeZone: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 28,
+    zIndex: 100,
+  },
+  overlay: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    zIndex: 950,
+  },
+  loadingText: {
+    color: '#CCCCCC',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  fetchedNotesSection: {
+    marginTop: 12,
+    gap: 8,
+  },
+  fetchedNotesTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  fetchedNoteCard: {
+    backgroundColor: '#1C1C1C',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+  },
+  fetchedNoteText: {
+    color: '#FFEB3B',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  noteContent: {
+    color: '#CCCCCC',
+    fontSize: 12,
+    marginTop: 6,
+    lineHeight: 16,
   },
 });
