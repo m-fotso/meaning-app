@@ -18,6 +18,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { auth } from '../../services/firebaseConfig';
+import { getBook, updateBook } from '../../services/bookService';
 import { getNotesForBook, Note } from '@/services/notesService';
 import { useAuth } from '@/app/context/AuthContext';
 import { ChapterNote } from '@/components/chapterNote';
@@ -66,6 +68,10 @@ export default function BookDetailScreen() {
   } | null>(null);
   // Search modal: show YouTube/Google links for selected text
   const [searchModal, setSearchModal] = useState<{ query: string } | null>(null);
+  // Debounce timer for saving page progress to Firestore
+  const savePageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [savedPageRestored, setSavedPageRestored] = useState(false);
+
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
@@ -112,6 +118,53 @@ export default function BookDetailScreen() {
 
     fetchText();
   }, [pdfPath]);
+
+  // Restore saved page from Firestore after pages are loaded
+  useEffect(() => {
+    if (pages.length === 0 || savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) {
+      setSavedPageRestored(true);
+      return;
+    }
+    getBook(userId, bookId).then((result) => {
+      if (result.success && result.book) {
+        const saved = result.book.currentPage;
+        if (saved > 0 && saved < pages.length) {
+          setCurrentPage(saved);
+        }
+        // Save totalPages if it changed
+        if (result.book.totalPages !== pages.length) {
+          updateBook(userId, bookId, { totalPages: pages.length });
+        }
+      } else {
+        // Book doc doesn't exist yet — save totalPages
+        updateBook(userId, bookId, { totalPages: pages.length }).catch(() => { });
+      }
+      setSavedPageRestored(true);
+    });
+  }, [pages.length, savedPageRestored, id]);
+
+  // Debounced save of currentPage to Firestore on page change
+  useEffect(() => {
+    if (!savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) return;
+
+    if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    savePageTimerRef.current = setTimeout(() => {
+      updateBook(userId, bookId, {
+        currentPage,
+        lastReadAt: new Date().toISOString(),
+      });
+    }, 500);
+
+    return () => {
+      if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    };
+  }, [currentPage, savedPageRestored, id]);
 
   useEffect(() => {
     if (!loading || startTime === null) {
@@ -433,15 +486,15 @@ export default function BookDetailScreen() {
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
       >
-      <Pressable onPress={() => router.back()} style={styles.backButton}>
-        <Text style={styles.backText}>Back</Text>
-      </Pressable>
-      
+        <Pressable onPress={() => router.back()} style={styles.backButton}>
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
 
 
 
 
-      <Text style={styles.title}>{displayTitle}</Text>
+
+        <Text style={styles.title}>{displayTitle}</Text>
         {(annotationsByPage[currentPage]?.length ?? 0) > 0 ? (
           <Pressable
             style={styles.seeAnnotationsButton}
@@ -452,13 +505,13 @@ export default function BookDetailScreen() {
             <Text style={styles.seeAnnotationsText}>See annotations</Text>
           </Pressable>
         ) : null}
-      {loading ? (
-        <Text style={styles.subtitle}>
-          Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
-        </Text>
-      ) : null}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {!loading && !error && pages.length ? (
+        {loading ? (
+          <Text style={styles.subtitle}>
+            Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
+          </Text>
+        ) : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {!loading && !error && pages.length ? (
           <View style={styles.pageList}>
             <View style={styles.pageContent}>
               {renderText(pages[currentPage])}
@@ -472,10 +525,10 @@ export default function BookDetailScreen() {
                 : 'Long-press any phrase to highlight or search'}
             </Text>
           </View>
-      ) : (
-        !loading &&
-        !error && <Text style={styles.subtitle}>Book detail page</Text>
-      )}
+        ) : (
+          !loading &&
+          !error && <Text style={styles.subtitle}>Book detail page</Text>
+        )}
       </ScrollView>
       {showAnnotations ? (
         <>
@@ -497,122 +550,122 @@ export default function BookDetailScreen() {
                 },
               ]}
             >
-            <View style={styles.annotationsHeader}>
-              <View>
-                <Text style={styles.annotationsTitle}>Annotations</Text>
-                <Text style={styles.annotationsSubtitle}>
-                  Page {currentPage + 1} of {pages.length}
-                </Text>
-              </View>
-              <Pressable style={styles.addAnnotationButton} onPress={() => setIsAddingAnnotation(true)}>
-                <Text style={styles.addAnnotationText}>+</Text>
-              </Pressable>
-            </View>
-            {isAddingAnnotation ? (
-              <View style={styles.annotationInputRow}>
-                <TextInput
-                  value={newAnnotation}
-                  onChangeText={setNewAnnotation}
-                  placeholder="Type an annotation"
-                  placeholderTextColor="#777777"
-                  style={styles.annotationInput}
-                  multiline
-                />
-                <View style={styles.annotationInputActions}>
-                  <Pressable style={styles.annotationSaveButton} onPress={handleAddAnnotation}>
-                    <Text style={styles.annotationSaveText}>Add</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.annotationCancelButton}
-                    onPress={() => {
-                      setNewAnnotation('');
-                      setIsAddingAnnotation(false);
-                    }}
-                  >
-                    <Text style={styles.annotationCancelText}>Cancel</Text>
-                  </Pressable>
+              <View style={styles.annotationsHeader}>
+                <View>
+                  <Text style={styles.annotationsTitle}>Annotations</Text>
+                  <Text style={styles.annotationsSubtitle}>
+                    Page {currentPage + 1} of {pages.length}
+                  </Text>
                 </View>
+                <Pressable style={styles.addAnnotationButton} onPress={() => setIsAddingAnnotation(true)}>
+                  <Text style={styles.addAnnotationText}>+</Text>
+                </Pressable>
               </View>
-            ) : null}
-            <View style={styles.annotationNav}>
-              <Pressable
-                style={[styles.annotationArrow, currentPage === 0 && styles.pageButtonDisabled]}
-                onPress={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
-                disabled={currentPage === 0}
-              >
-                <Text style={styles.annotationArrowText}>‹</Text>
-              </Pressable>
-              <Text style={styles.annotationCount}>Page {currentPage + 1}</Text>
-              <Pressable
-                style={[
-                  styles.annotationArrow,
-                  currentPage >= pages.length - 1 && styles.pageButtonDisabled,
-                ]}
-                onPress={() => setCurrentPage((prev) => Math.min(pages.length - 1, prev + 1))}
-                disabled={currentPage >= pages.length - 1}
-              >
-                <Text style={styles.annotationArrowText}>›</Text>
-              </Pressable>
-            </View>
-            <ScrollView style={styles.annotationsList} keyboardShouldPersistTaps="handled">
-              {currentAnnotations.length ? (
-                currentAnnotations.map((annotation, index) => (
-                  <View key={index} style={styles.annotationCard}>
-                    <Text style={styles.annotationText}>{annotation}</Text>
+              {isAddingAnnotation ? (
+                <View style={styles.annotationInputRow}>
+                  <TextInput
+                    value={newAnnotation}
+                    onChangeText={setNewAnnotation}
+                    placeholder="Type an annotation"
+                    placeholderTextColor="#777777"
+                    style={styles.annotationInput}
+                    multiline
+                  />
+                  <View style={styles.annotationInputActions}>
+                    <Pressable style={styles.annotationSaveButton} onPress={handleAddAnnotation}>
+                      <Text style={styles.annotationSaveText}>Add</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.annotationCancelButton}
+                      onPress={() => {
+                        setNewAnnotation('');
+                        setIsAddingAnnotation(false);
+                      }}
+                    >
+                      <Text style={styles.annotationCancelText}>Cancel</Text>
+                    </Pressable>
                   </View>
-                ))
-              ) : (
-                <Text style={styles.annotationsEmpty}>No annotations yet.</Text>
-              )}
-              {notesLoading && <Text style={styles.loadingText}>Loading notes…</Text>}
-              {!notesLoading && fetchedNotes.length > 0 && (
-                <View style={styles.fetchedNotesSection}>
-                  <Text style={styles.fetchedNotesTitle}>Service Notes</Text>
-                  {fetchedNotes.map((note) => (
-                    <View key={note.id} style={styles.fetchedNoteCard}>
-                      <Text style={styles.fetchedNoteText}>{note.highlightedText}</Text>
-                      {note.userNote && <Text style={styles.noteContent}>{note.userNote}</Text>}
+                </View>
+              ) : null}
+              <View style={styles.annotationNav}>
+                <Pressable
+                  style={[styles.annotationArrow, currentPage === 0 && styles.pageButtonDisabled]}
+                  onPress={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
+                  disabled={currentPage === 0}
+                >
+                  <Text style={styles.annotationArrowText}>‹</Text>
+                </Pressable>
+                <Text style={styles.annotationCount}>Page {currentPage + 1}</Text>
+                <Pressable
+                  style={[
+                    styles.annotationArrow,
+                    currentPage >= pages.length - 1 && styles.pageButtonDisabled,
+                  ]}
+                  onPress={() => setCurrentPage((prev) => Math.min(pages.length - 1, prev + 1))}
+                  disabled={currentPage >= pages.length - 1}
+                >
+                  <Text style={styles.annotationArrowText}>›</Text>
+                </Pressable>
+              </View>
+              <ScrollView style={styles.annotationsList} keyboardShouldPersistTaps="handled">
+                {currentAnnotations.length ? (
+                  currentAnnotations.map((annotation, index) => (
+                    <View key={index} style={styles.annotationCard}>
+                      <Text style={styles.annotationText}>{annotation}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.annotationsEmpty}>No annotations yet.</Text>
+                )}
+                {notesLoading && <Text style={styles.loadingText}>Loading notes…</Text>}
+                {!notesLoading && fetchedNotes.length > 0 && (
+                  <View style={styles.fetchedNotesSection}>
+                    <Text style={styles.fetchedNotesTitle}>Service Notes</Text>
+                    {fetchedNotes.map((note) => (
+                      <View key={note.id} style={styles.fetchedNoteCard}>
+                        <Text style={styles.fetchedNoteText}>{note.highlightedText}</Text>
+                        {note.userNote && <Text style={styles.noteContent}>{note.userNote}</Text>}
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </ScrollView>
+              {currentRangeHighlights.length > 0 ? (
+                <View style={styles.highlightsSection}>
+                  <Text style={styles.highlightsTitle}>Highlights</Text>
+                  {currentRangeHighlights.map((h) => (
+                    <View key={h.id} style={styles.highlightItem}>
+                      <Pressable
+                        onPress={() =>
+                          setSelectionPopup({ segmentIndex: null, text: h.text, rangeHighlightId: h.id })
+                        }
+                        style={styles.highlightItemTextWrap}
+                      >
+                        <Text style={styles.highlightItemText} numberOfLines={2}>{h.text}</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.highlightSearchButton}
+                        onPress={() => openSearchModal(h.text)}
+                      >
+                        <Text style={styles.highlightSearchButtonText}>Search</Text>
+                      </Pressable>
                     </View>
                   ))}
                 </View>
-              )}
-            </ScrollView>
-            {currentRangeHighlights.length > 0 ? (
-              <View style={styles.highlightsSection}>
-                <Text style={styles.highlightsTitle}>Highlights</Text>
-                {currentRangeHighlights.map((h) => (
-                  <View key={h.id} style={styles.highlightItem}>
-                    <Pressable
-                      onPress={() =>
-                        setSelectionPopup({ segmentIndex: null, text: h.text, rangeHighlightId: h.id })
-                      }
-                      style={styles.highlightItemTextWrap}
-                    >
-                      <Text style={styles.highlightItemText} numberOfLines={2}>{h.text}</Text>
-                    </Pressable>
-                    <Pressable
-                      style={styles.highlightSearchButton}
-                      onPress={() => openSearchModal(h.text)}
-                    >
-                      <Text style={styles.highlightSearchButtonText}>Search</Text>
-                    </Pressable>
-                  </View>
-                ))}
+              ) : null}
+              <View style={styles.pageSlider}>
+                <Text style={styles.pageSliderLabel}>Jump to page {currentPage + 1}</Text>
+                <Slider
+                  minimumValue={0}
+                  maximumValue={Math.max(0, pages.length - 1)}
+                  step={1}
+                  value={currentPage}
+                  onValueChange={(value: number) => setCurrentPage(Math.round(value))}
+                  minimumTrackTintColor="#FFFFFF"
+                  maximumTrackTintColor="#333333"
+                  thumbTintColor="#FFFFFF"
+                />
               </View>
-            ) : null}
-            <View style={styles.pageSlider}>
-              <Text style={styles.pageSliderLabel}>Jump to page {currentPage + 1}</Text>
-              <Slider
-                minimumValue={0}
-                maximumValue={Math.max(0, pages.length - 1)}
-                step={1}
-                value={currentPage}
-                onValueChange={(value: number) => setCurrentPage(Math.round(value))}
-                minimumTrackTintColor="#FFFFFF"
-                maximumTrackTintColor="#333333"
-                thumbTintColor="#FFFFFF"
-              />
-            </View>
             </Animated.View>
           </View>
         </>

@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { auth } from '@/services/firebaseConfig';
 import { logOut } from '@/services/authService';
+import { getUserBooks, type Book } from '@/services/bookService';
 
 import { Link, router } from 'expo-router';
 
@@ -12,37 +13,52 @@ import { Link, router } from 'expo-router';
 export default function HomeScreen() {
   const [displayName, setDisplayName] = useState<string>('User');
   const [email, setEmail] = useState<string>('');
+  const [currentReads, setCurrentReads] = useState<Array<{ id: string; title: string; pdfPath: string | null }>>([]);
 
-  // Refresh user data on mount to get latest displayName
+  const hardcodedBooks = [
+    { id: 'hc-1', title: 'Book 1', pdfPath: 'deliverable-marie/alice-in-wonderland.pdf' },
+    {
+      id: 'hc-2',
+      title: 'Book 2',
+      pdfPath:
+        'deliverable-marie/Terry Pratchett - Night Watch (Discworld, #29) (2003).pdf',
+    },
+    { id: 'hc-3', title: 'Book 3', pdfPath: null },
+    { id: 'hc-4', title: 'Book 4', pdfPath: null },
+  ];
+
+  // Refresh user data and fetch books on mount
   useEffect(() => {
     const refreshUser = async () => {
       const user = auth.currentUser;
       if (user) {
-        // Reload user to get latest profile data (including displayName set during signup)
         await user.reload();
-        
-        // Get the refreshed user
         const refreshedUser = auth.currentUser;
         setDisplayName(refreshedUser?.displayName || 'User');
         setEmail(refreshedUser?.email || '');
+
+        // Fetch user's books from Firestore
+        const result = await getUserBooks(user.uid);
+        if (result.success && result.books && result.books.length > 0) {
+          setCurrentReads(
+            result.books.map((b) => ({
+              id: b.id,
+              title: b.title,
+              pdfPath: b.pdfPath || null,
+            }))
+          );
+        } else {
+          // Fall back to hardcoded list
+          setCurrentReads(hardcodedBooks);
+        }
+      } else {
+        setCurrentReads(hardcodedBooks);
       }
     };
     refreshUser();
   }, []);
 
   const router = useRouter();
-  // Sample data - will be replaced with actual user data
-  const currentReads = [
-    { id: 1, title: 'Book 1', pdfPath: 'deliverable-marie/alice-in-wonderland.pdf' },
-    {
-      id: 2,
-      title: 'Book 2',
-      pdfPath:
-        'deliverable-marie/Terry Pratchett - Night Watch (Discworld, #29) (2003).pdf',
-    },
-    { id: 3, title: 'Book 3', pdfPath: null },
-    { id: 4, title: 'Book 4', pdfPath: null },
-  ];
 
   const handleLogout = async () => {
     await logOut();
