@@ -31,7 +31,6 @@ const MENU_WIDTH = Math.min(320, SCREEN_WIDTH * 0.8);
 export default function BookDetailScreen() {
   const router = useRouter();
   const { user, initializing } = useAuth();
-  const { user, initializing } = useAuth();
   const { title, id, pdfPath } = useLocalSearchParams<{
     title?: string;
     id?: string;
@@ -48,8 +47,6 @@ export default function BookDetailScreen() {
   const [loading, setLoading] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
-  const [fetchedNotes, setFetchedNotes] = useState<Note[]>([]);
-  const [notesLoading, setNotesLoading] = useState(false);
   const [fetchedNotes, setFetchedNotes] = useState<Note[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
