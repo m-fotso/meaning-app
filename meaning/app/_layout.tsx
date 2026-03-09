@@ -31,7 +31,7 @@ export default function RootLayout() {
     if (loading) return;
 
     const currentRoute = segments[0];
-    const isAuthScreen = currentRoute === 'signin' || currentRoute === 'signup' || currentRoute === 'home' || currentRoute === 'display';
+    const isAuthScreen = currentRoute === 'signin' || currentRoute === 'signup' || currentRoute === 'home';
 
    
     if (!user && !isAuthScreen) {

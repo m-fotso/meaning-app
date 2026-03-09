@@ -9,6 +9,9 @@ import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 
 
 
+import { Link, router } from 'expo-router';
+
+
 export default function HomeScreen() {
   const [displayName, setDisplayName] = useState<string>('User');
   const [email, setEmail] = useState<string>('');

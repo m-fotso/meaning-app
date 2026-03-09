@@ -31,6 +31,7 @@ const MENU_WIDTH = Math.min(320, SCREEN_WIDTH * 0.8);
 export default function BookDetailScreen() {
   const router = useRouter();
   const { user, initializing } = useAuth();
+  const { user, initializing } = useAuth();
   const { title, id, pdfPath } = useLocalSearchParams<{
     title?: string;
     id?: string;
@@ -49,12 +50,42 @@ export default function BookDetailScreen() {
   const [startTime, setStartTime] = useState<number | null>(null);
   const [fetchedNotes, setFetchedNotes] = useState<Note[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
+  const [fetchedNotes, setFetchedNotes] = useState<Note[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
   const [showChapterNote, setShowChapterNote] = useState(false);
 
   // Swipe and animation refs
   const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
   const panResponderRef = useRef<PanResponderInstance | null>(null);
+  /// Chapter detection from page text
+  const getNewestChapterPage = (pages: string[]): number => {
+    let newestPage = -1;
+
+    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
+
+    pages.forEach((pageText, index) => {
+      if (chapterRegex.test(pageText)) {
+        newestPage = index;
+      }
+    });
+    console.log(newestPage);
+    return newestPage;
+  };
+  
+  // Get list of page indices that contain chapter headings, for chapter note association and quick navigation
+  const getChapterPages = (pages: string[]): number[] => {
+    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
+    const chapterPages: number[] = [];
+
+    pages.forEach((pageText, index) => {
+      if (chapterRegex.test(pageText)) {
+        chapterPages.push(index);
+      }
+    });
+    console.log(chapterPages);
+    return chapterPages;
+  };
 
   // Range highlights: page -> list of { id, text } (exact text only, not full segment)
   const [rangeHighlightsByPage, setRangeHighlightsByPage] = useState<
@@ -175,6 +206,60 @@ export default function BookDetailScreen() {
     }, 200);
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
+
+  // Animation effect for menu slide-in/out
+  useEffect(() => {
+    Animated.timing(menuAnimRef, {
+      toValue: showAnnotations ? 1 : 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [showAnnotations, menuAnimRef]);
+
+  // Fetch notes from service
+  useEffect(() => {
+    if (initializing) {
+      return;
+    }
+    if (!user || !id) {
+      setFetchedNotes([]);
+      return;
+    }
+
+    let mounted = true;
+    const fetchNotes = async () => {
+      setNotesLoading(true);
+      const result = await getNotesForBook(user.uid, String(id), currentPage);
+      if (!mounted) return;
+      if (result.success && result.notes) {
+        setFetchedNotes(result.notes);
+      } else {
+        console.error('Failed to fetch notes:', result.error);
+        setFetchedNotes([]);
+      }
+      setNotesLoading(false);
+    };
+    fetchNotes();
+
+    return () => {
+      mounted = false;
+    };
+  }, [user, initializing, id, currentPage]);
+
+  // Initialize PanResponder for left-swipe detection
+  useEffect(() => {
+    panResponderRef.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
+        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
+      },
+      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
+        if (gestureState.dx < -50) {
+          setShowAnnotations(true);
+        }
+      },
+    });
+  }, []);
 
   // Animation effect for menu slide-in/out
   useEffect(() => {
@@ -481,6 +566,10 @@ export default function BookDetailScreen() {
       {panResponderRef.current && (
         <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
       )}
+      {/* Right-edge invisible swipe zone for gesture detection */}
+      {panResponderRef.current && (
+        <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
+      )}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.container}
@@ -670,6 +759,25 @@ export default function BookDetailScreen() {
           </View>
         </>
       ) : null}
+
+      {/* Chapter Notes Modal */}
+      <ChapterNote
+        visible={showChapterNote}
+        onClose={() => setShowChapterNote(false)}
+        userId={user?.uid ?? ''}
+        bookId={String(id)}
+        currentPage={currentPage}
+        onSaveSuccess={() => {
+          // Refetch notes after save
+          if (user && id) {
+            getNotesForBook(user.uid, String(id), currentPage).then((result) => {
+              if (result.success && result.notes) {
+                setFetchedNotes(result.notes);
+              }
+            });
+          }
+        }}
+      />
 
       {/* Chapter Notes Modal */}
       <ChapterNote
