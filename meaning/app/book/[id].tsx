@@ -19,7 +19,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View
+  View,
 } from 'react-native';
 import { getBook, updateBook } from '../../services/bookService';
 import { auth } from '../../services/firebaseConfig';
@@ -563,10 +563,6 @@ export default function BookDetailScreen() {
       {panResponderRef.current && (
         <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
       )}
-      {/* Right-edge invisible swipe zone for gesture detection */}
-      {panResponderRef.current && (
-        <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
-      )}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.container}
@@ -756,25 +752,6 @@ export default function BookDetailScreen() {
           </View>
         </>
       ) : null}
-
-      {/* Chapter Notes Modal */}
-      <ChapterNote
-        visible={showChapterNote}
-        onClose={() => setShowChapterNote(false)}
-        userId={user?.uid ?? ''}
-        bookId={String(id)}
-        currentPage={currentPage}
-        onSaveSuccess={() => {
-          // Refetch notes after save
-          if (user && id) {
-            getNotesForBook(user.uid, String(id), currentPage).then((result) => {
-              if (result.success && result.notes) {
-                setFetchedNotes(result.notes);
-              }
-            });
-          }
-        }}
-      />
 
       {/* Chapter Notes Modal */}
       <ChapterNote
