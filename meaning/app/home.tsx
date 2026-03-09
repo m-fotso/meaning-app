@@ -1,51 +1,69 @@
-import { useState, useEffect } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Fonts } from '@/constants/theme';
-import { useRouter } from 'expo-router';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { auth } from '@/services/firebaseConfig';
 import { logOut } from '@/services/authService';
+import { getUserBooks } from '@/services/bookService';
+import { auth } from '@/services/firebaseConfig';
+import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+
 
 export default function HomeScreen() {
   const [displayName, setDisplayName] = useState<string>('User');
   const [email, setEmail] = useState<string>('');
+  const [currentReads, setCurrentReads] = useState<Array<{ id: string; title: string; pdfPath: string | null }>>([]);
 
-  // Refresh user data on mount to get latest displayName
+  const hardcodedBooks = [
+    { id: 'hc-1', title: 'Book 1', pdfPath: 'deliverable-marie/alice-in-wonderland.pdf' },
+    {
+      id: 'hc-2',
+      title: 'Book 2',
+      pdfPath:
+        'deliverable-marie/Terry Pratchett - Night Watch (Discworld, #29) (2003).pdf',
+    },
+    { id: 'hc-3', title: 'Book 3', pdfPath: null },
+    { id: 'hc-4', title: 'Book 4', pdfPath: null },
+  ];
+
+  // Refresh user data and fetch books on mount
   useEffect(() => {
     const refreshUser = async () => {
       const user = auth.currentUser;
       if (user) {
-        // Reload user to get latest profile data (including displayName set during signup)
         await user.reload();
-        
-        // Get the refreshed user
         const refreshedUser = auth.currentUser;
         setDisplayName(refreshedUser?.displayName || 'User');
         setEmail(refreshedUser?.email || '');
+
+        // Fetch user's books from Firestore
+        const result = await getUserBooks(user.uid);
+        if (result.success && result.books && result.books.length > 0) {
+          setCurrentReads(
+            result.books.map((b) => ({
+              id: b.id,
+              title: b.title,
+              pdfPath: b.pdfPath || null,
+            }))
+          );
+        } else {
+          // Fall back to hardcoded list
+          setCurrentReads(hardcodedBooks);
+        }
+      } else {
+        setCurrentReads(hardcodedBooks);
       }
     };
     refreshUser();
   }, []);
 
   const router = useRouter();
-  // Sample data - will be replaced with actual user data
-  const currentReads = [
-    { id: 1, title: 'Book 1', pdfPath: 'deliverable-marie/alice-in-wonderland.pdf' },
-    {
-      id: 2,
-      title: 'Book 2',
-      pdfPath:
-        'deliverable-marie/Terry Pratchett - Night Watch (Discworld, #29) (2003).pdf',
-    },
-    { id: 3, title: 'Book 3', pdfPath: null },
-    { id: 4, title: 'Book 4', pdfPath: null },
-  ];
 
   const handleLogout = async () => {
     await logOut();
     // Navigation happens automatically via auth state listener in _layout.tsx
   };
-  const bookCover = require('../deliverable-marie/alice-in-wonderland.png');
+  const bookCover = require('../deliverable-marie/Screenshot 2026-02-08 at 9.28.27 PM.png');
 
   return (
     <View style={styles.container}>
@@ -95,6 +113,16 @@ export default function HomeScreen() {
         <View style={styles.section}>
           <Pressable style={styles.logoutButton} onPress={handleLogout}>
             <Text style={styles.logoutButtonText}>Logout</Text>
+          </Pressable>
+        </View>
+
+        <View>
+          {/* Dev Button - Temporary */}
+          <Pressable 
+            style={styles.devButton}
+            onPress={() => router.push('/reader')}
+          >
+            <Text style={styles.devButtonText}>Dev (Skip to reader)</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -244,5 +272,21 @@ const styles = StyleSheet.create({
     padding: 8,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+   devButton: {
+    backgroundColor: '#E0E0E0',
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    width: '100%',
+    marginTop: 8,
+  },
+  devButtonText: {
+    color: '#666666',
+    fontSize: 14,
+    fontWeight: '500',
+    fontFamily: Fonts.sans,
   },
 });

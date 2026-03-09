@@ -1,17 +1,41 @@
+import { useAuth } from '@/app/context/AuthContext';
+import { ChapterNote } from '@/components/chapterNote';
+import { getNotesForBook, Note } from '@/services/notesService';
 import Slider from '@react-native-community/slider';
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Animated,
+  Dimensions,
+  Linking,
+  Modal,
+  PanResponder,
+  PanResponderGestureState,
+  PanResponderInstance,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View
+} from 'react-native';
+import { getBook, updateBook } from '../../services/bookService';
+import { auth } from '../../services/firebaseConfig';
+
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const MENU_WIDTH = Math.min(320, SCREEN_WIDTH * 0.8);
 
 export default function BookDetailScreen() {
   const router = useRouter();
+  const { user, initializing } = useAuth();
   const { title, id, pdfPath } = useLocalSearchParams<{
     title?: string;
     id?: string;
     pdfPath?: string;
   }>();
-  const [imageUri, setImageUri] = useState<string | null>(null);
   const displayTitle = title ?? `Book ${id ?? ''}`;
   const [pages, setPages] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
@@ -23,34 +47,14 @@ export default function BookDetailScreen() {
   const [loading, setLoading] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
+  const [fetchedNotes, setFetchedNotes] = useState<Note[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
+  const [showChapterNote, setShowChapterNote] = useState(false);
 
-  const getNewestChapterPage = (pages: string[]): number => {
-    let newestPage = -1;
-
-    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
-
-    pages.forEach((pageText, index) => {
-      if (chapterRegex.test(pageText)) {
-        newestPage = index;
-      }
-    });
-    console.log(newestPage);
-    return newestPage;
-  };
-
-  const getChapterPages = (pages: string[]): number[] => {
-    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
-    const chapterPages: number[] = [];
-
-    pages.forEach((pageText, index) => {
-      if (chapterRegex.test(pageText)) {
-        chapterPages.push(index);
-      }
-    });
-    console.log(chapterPages);
-    return chapterPages;
-  };
+  // Swipe and animation refs
+  const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
+  const panResponderRef = useRef<PanResponderInstance | null>(null);
 
   // Range highlights: page -> list of { id, text } (exact text only, not full segment)
   const [rangeHighlightsByPage, setRangeHighlightsByPage] = useState<
@@ -64,7 +68,10 @@ export default function BookDetailScreen() {
   } | null>(null);
   // Search modal: show YouTube/Google links for selected text
   const [searchModal, setSearchModal] = useState<{ query: string } | null>(null);
-  
+  // Debounce timer for saving page progress to Firestore
+  const savePageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [savedPageRestored, setSavedPageRestored] = useState(false);
+
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
@@ -74,7 +81,6 @@ export default function BookDetailScreen() {
       return;
     }
 
-    //function for fetching text from the backend and splitting into pages, with error handling and loading state
     const fetchText = async () => {
       try {
         setLoading(true);
@@ -102,8 +108,6 @@ export default function BookDetailScreen() {
         setCurrentPage(0);
         setAnnotationsByPage({});
         setRangeHighlightsByPage({});
-        getChapterPages(nextPages);
-        getNewestChapterPage(nextPages);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load PDF text.');
       } finally {
@@ -115,6 +119,53 @@ export default function BookDetailScreen() {
     fetchText();
   }, [pdfPath]);
 
+  // Restore saved page from Firestore after pages are loaded
+  useEffect(() => {
+    if (pages.length === 0 || savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) {
+      setSavedPageRestored(true);
+      return;
+    }
+    getBook(userId, bookId).then((result) => {
+      if (result.success && result.book) {
+        const saved = result.book.currentPage;
+        if (saved > 0 && saved < pages.length) {
+          setCurrentPage(saved);
+        }
+        // Save totalPages if it changed
+        if (result.book.totalPages !== pages.length) {
+          updateBook(userId, bookId, { totalPages: pages.length });
+        }
+      } else {
+        // Book doc doesn't exist yet — save totalPages
+        updateBook(userId, bookId, { totalPages: pages.length }).catch(() => { });
+      }
+      setSavedPageRestored(true);
+    });
+  }, [pages.length, savedPageRestored, id]);
+
+  // Debounced save of currentPage to Firestore on page change
+  useEffect(() => {
+    if (!savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) return;
+
+    if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    savePageTimerRef.current = setTimeout(() => {
+      updateBook(userId, bookId, {
+        currentPage,
+        lastReadAt: new Date().toISOString(),
+      });
+    }, 500);
+
+    return () => {
+      if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    };
+  }, [currentPage, savedPageRestored, id]);
+
   useEffect(() => {
     if (!loading || startTime === null) {
       return;
@@ -124,6 +175,60 @@ export default function BookDetailScreen() {
     }, 200);
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
+
+  // Animation effect for menu slide-in/out
+  useEffect(() => {
+    Animated.timing(menuAnimRef, {
+      toValue: showAnnotations ? 1 : 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [showAnnotations, menuAnimRef]);
+
+  // Fetch notes from service
+  useEffect(() => {
+    if (initializing) {
+      return;
+    }
+    if (!user || !id) {
+      setFetchedNotes([]);
+      return;
+    }
+
+    let mounted = true;
+    const fetchNotes = async () => {
+      setNotesLoading(true);
+      const result = await getNotesForBook(user.uid, String(id), currentPage);
+      if (!mounted) return;
+      if (result.success && result.notes) {
+        setFetchedNotes(result.notes);
+      } else {
+        console.error('Failed to fetch notes:', result.error);
+        setFetchedNotes([]);
+      }
+      setNotesLoading(false);
+    };
+    fetchNotes();
+
+    return () => {
+      mounted = false;
+    };
+  }, [user, initializing, id, currentPage]);
+
+  // Initialize PanResponder for left-swipe detection
+  useEffect(() => {
+    panResponderRef.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
+        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
+      },
+      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
+        if (gestureState.dx < -50) {
+          setShowAnnotations(true);
+        }
+      },
+    });
+  }, []);
 
   const handleAddAnnotation = () => {
     const trimmed = newAnnotation.trim();
@@ -221,26 +326,6 @@ export default function BookDetailScreen() {
     const sel = window.getSelection?.();
     return (sel?.toString?.() ?? '').trim();
   };
-
-  const openImageGeneration = async (prompt: string) => {
-    try {
-      const response = await fetch("http://localhost:5050/generate-image",{
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          prompt: "alice in wonderland",
-        })
-      });
-      const data = (await response.json());
-      setImageUri(data.image);
-    } catch (err) {
-      console.error("Image generation failed", err);
-    }
-  
-  }
-
 
   // On web, keep the last non-empty selection in a ref so the Selection button can use it
   // (clicking the button clears the selection before onPress runs)
@@ -392,15 +477,24 @@ export default function BookDetailScreen() {
 
   return (
     <View style={styles.screen}>
+      {/* Right-edge invisible swipe zone for gesture detection */}
+      {panResponderRef.current && (
+        <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
+      )}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
       >
-      <Pressable onPress={() => router.back()} style={styles.backButton}>
-        <Text style={styles.backText}>Back</Text>
-      </Pressable>
-      <Text style={styles.title}>{displayTitle}</Text>
+        <Pressable onPress={() => router.back()} style={styles.backButton}>
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
+
+
+
+
+
+        <Text style={styles.title}>{displayTitle}</Text>
         {(annotationsByPage[currentPage]?.length ?? 0) > 0 ? (
           <Pressable
             style={styles.seeAnnotationsButton}
@@ -411,13 +505,13 @@ export default function BookDetailScreen() {
             <Text style={styles.seeAnnotationsText}>See annotations</Text>
           </Pressable>
         ) : null}
-      {loading ? (
-        <Text style={styles.subtitle}>
-          Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
-        </Text>
-      ) : null}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {!loading && !error && pages.length ? (
+        {loading ? (
+          <Text style={styles.subtitle}>
+            Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
+          </Text>
+        ) : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {!loading && !error && pages.length ? (
           <View style={styles.pageList}>
             <View style={styles.pageContent}>
               {renderText(pages[currentPage])}
@@ -431,121 +525,170 @@ export default function BookDetailScreen() {
                 : 'Long-press any phrase to highlight or search'}
             </Text>
           </View>
-      ) : (
-        !loading &&
-        !error && <Text style={styles.subtitle}>Book detail page</Text>
-      )}
+        ) : (
+          !loading &&
+          !error && <Text style={styles.subtitle}>Book detail page</Text>
+        )}
       </ScrollView>
       {showAnnotations ? (
-        <View style={styles.annotationsOverlay}>
-          <View style={styles.annotationsPanel}>
-            <View style={styles.annotationsHeader}>
-              <View>
-                <Text style={styles.annotationsTitle}>Annotations</Text>
-                <Text style={styles.annotationsSubtitle}>
-                  Page {currentPage + 1} of {pages.length}
-                </Text>
-              </View>
-              <Pressable style={styles.addAnnotationButton} onPress={() => setIsAddingAnnotation(true)}>
-                <Text style={styles.addAnnotationText}>+</Text>
-              </Pressable>
-            </View>
-            {isAddingAnnotation ? (
-              <View style={styles.annotationInputRow}>
-                <TextInput
-                  value={newAnnotation}
-                  onChangeText={setNewAnnotation}
-                  placeholder="Type an annotation"
-                  placeholderTextColor="#777777"
-                  style={styles.annotationInput}
-                  multiline
-                />
-                <View style={styles.annotationInputActions}>
-                  <Pressable style={styles.annotationSaveButton} onPress={handleAddAnnotation}>
-                    <Text style={styles.annotationSaveText}>Add</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.annotationCancelButton}
-                    onPress={() => {
-                      setNewAnnotation('');
-                      setIsAddingAnnotation(false);
-                    }}
-                  >
-                    <Text style={styles.annotationCancelText}>Cancel</Text>
-                  </Pressable>
+        <>
+          <Pressable style={styles.overlay} onPress={() => setShowAnnotations(false)} />
+          <View style={styles.annotationsOverlay}>
+            <Animated.View
+              style={[
+                styles.annotationsPanel,
+                {
+                  width: MENU_WIDTH,
+                  transform: [
+                    {
+                      translateX: menuAnimRef.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [MENU_WIDTH, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            >
+              <View style={styles.annotationsHeader}>
+                <View>
+                  <Text style={styles.annotationsTitle}>Annotations</Text>
+                  <Text style={styles.annotationsSubtitle}>
+                    Page {currentPage + 1} of {pages.length}
+                  </Text>
                 </View>
+                <Pressable style={styles.addAnnotationButton} onPress={() => setIsAddingAnnotation(true)}>
+                  <Text style={styles.addAnnotationText}>+</Text>
+                </Pressable>
               </View>
-            ) : null}
-            <View style={styles.annotationNav}>
-              <Pressable
-                style={[styles.annotationArrow, currentPage === 0 && styles.pageButtonDisabled]}
-                onPress={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
-                disabled={currentPage === 0}
-              >
-                <Text style={styles.annotationArrowText}>‹</Text>
-              </Pressable>
-              <Text style={styles.annotationCount}>Page {currentPage + 1}</Text>
-              <Pressable
-                style={[
-                  styles.annotationArrow,
-                  currentPage >= pages.length - 1 && styles.pageButtonDisabled,
-                ]}
-                onPress={() => setCurrentPage((prev) => Math.min(pages.length - 1, prev + 1))}
-                disabled={currentPage >= pages.length - 1}
-              >
-                <Text style={styles.annotationArrowText}>›</Text>
-              </Pressable>
-            </View>
-            <ScrollView style={styles.annotationsList} keyboardShouldPersistTaps="handled">
-              {currentAnnotations.length ? (
-                currentAnnotations.map((annotation, index) => (
-                  <View key={index} style={styles.annotationCard}>
-                    <Text style={styles.annotationText}>{annotation}</Text>
-                  </View>
-                ))
-              ) : (
-                <Text style={styles.annotationsEmpty}>No annotations yet.</Text>
-              )}
-            </ScrollView>
-            {currentRangeHighlights.length > 0 ? (
-              <View style={styles.highlightsSection}>
-                <Text style={styles.highlightsTitle}>Highlights</Text>
-                {currentRangeHighlights.map((h) => (
-                  <View key={h.id} style={styles.highlightItem}>
-                    <Pressable
-                      onPress={() =>
-                        setSelectionPopup({ segmentIndex: null, text: h.text, rangeHighlightId: h.id })
-                      }
-                      style={styles.highlightItemTextWrap}
-                    >
-                      <Text style={styles.highlightItemText} numberOfLines={2}>{h.text}</Text>
+              {isAddingAnnotation ? (
+                <View style={styles.annotationInputRow}>
+                  <TextInput
+                    value={newAnnotation}
+                    onChangeText={setNewAnnotation}
+                    placeholder="Type an annotation"
+                    placeholderTextColor="#777777"
+                    style={styles.annotationInput}
+                    multiline
+                  />
+                  <View style={styles.annotationInputActions}>
+                    <Pressable style={styles.annotationSaveButton} onPress={handleAddAnnotation}>
+                      <Text style={styles.annotationSaveText}>Add</Text>
                     </Pressable>
                     <Pressable
-                      style={styles.highlightSearchButton}
-                      onPress={() => openSearchModal(h.text)}
+                      style={styles.annotationCancelButton}
+                      onPress={() => {
+                        setNewAnnotation('');
+                        setIsAddingAnnotation(false);
+                      }}
                     >
-                      <Text style={styles.highlightSearchButtonText}>Search</Text>
+                      <Text style={styles.annotationCancelText}>Cancel</Text>
                     </Pressable>
                   </View>
-                ))}
+                </View>
+              ) : null}
+              <View style={styles.annotationNav}>
+                <Pressable
+                  style={[styles.annotationArrow, currentPage === 0 && styles.pageButtonDisabled]}
+                  onPress={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
+                  disabled={currentPage === 0}
+                >
+                  <Text style={styles.annotationArrowText}>‹</Text>
+                </Pressable>
+                <Text style={styles.annotationCount}>Page {currentPage + 1}</Text>
+                <Pressable
+                  style={[
+                    styles.annotationArrow,
+                    currentPage >= pages.length - 1 && styles.pageButtonDisabled,
+                  ]}
+                  onPress={() => setCurrentPage((prev) => Math.min(pages.length - 1, prev + 1))}
+                  disabled={currentPage >= pages.length - 1}
+                >
+                  <Text style={styles.annotationArrowText}>›</Text>
+                </Pressable>
               </View>
-            ) : null}
-            <View style={styles.pageSlider}>
-              <Text style={styles.pageSliderLabel}>Jump to page {currentPage + 1}</Text>
-              <Slider
-                minimumValue={0}
-                maximumValue={Math.max(0, pages.length - 1)}
-                step={1}
-                value={currentPage}
-                onValueChange={(value: number) => setCurrentPage(Math.round(value))}
-                minimumTrackTintColor="#FFFFFF"
-                maximumTrackTintColor="#333333"
-                thumbTintColor="#FFFFFF"
-              />
-            </View>
+              <ScrollView style={styles.annotationsList} keyboardShouldPersistTaps="handled">
+                {currentAnnotations.length ? (
+                  currentAnnotations.map((annotation, index) => (
+                    <View key={index} style={styles.annotationCard}>
+                      <Text style={styles.annotationText}>{annotation}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.annotationsEmpty}>No annotations yet.</Text>
+                )}
+                {notesLoading && <Text style={styles.loadingText}>Loading notes…</Text>}
+                {!notesLoading && fetchedNotes.length > 0 && (
+                  <View style={styles.fetchedNotesSection}>
+                    <Text style={styles.fetchedNotesTitle}>Service Notes</Text>
+                    {fetchedNotes.map((note) => (
+                      <View key={note.id} style={styles.fetchedNoteCard}>
+                        <Text style={styles.fetchedNoteText}>{note.highlightedText}</Text>
+                        {note.userNote && <Text style={styles.noteContent}>{note.userNote}</Text>}
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </ScrollView>
+              {currentRangeHighlights.length > 0 ? (
+                <View style={styles.highlightsSection}>
+                  <Text style={styles.highlightsTitle}>Highlights</Text>
+                  {currentRangeHighlights.map((h) => (
+                    <View key={h.id} style={styles.highlightItem}>
+                      <Pressable
+                        onPress={() =>
+                          setSelectionPopup({ segmentIndex: null, text: h.text, rangeHighlightId: h.id })
+                        }
+                        style={styles.highlightItemTextWrap}
+                      >
+                        <Text style={styles.highlightItemText} numberOfLines={2}>{h.text}</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.highlightSearchButton}
+                        onPress={() => openSearchModal(h.text)}
+                      >
+                        <Text style={styles.highlightSearchButtonText}>Search</Text>
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+              <View style={styles.pageSlider}>
+                <Text style={styles.pageSliderLabel}>Jump to page {currentPage + 1}</Text>
+                <Slider
+                  minimumValue={0}
+                  maximumValue={Math.max(0, pages.length - 1)}
+                  step={1}
+                  value={currentPage}
+                  onValueChange={(value: number) => setCurrentPage(Math.round(value))}
+                  minimumTrackTintColor="#FFFFFF"
+                  maximumTrackTintColor="#333333"
+                  thumbTintColor="#FFFFFF"
+                />
+              </View>
+            </Animated.View>
           </View>
-        </View>
+        </>
       ) : null}
+
+      {/* Chapter Notes Modal */}
+      <ChapterNote
+        visible={showChapterNote}
+        onClose={() => setShowChapterNote(false)}
+        userId={user?.uid ?? ''}
+        bookId={String(id)}
+        currentPage={currentPage}
+        onSaveSuccess={() => {
+          // Refetch notes after save
+          if (user && id) {
+            getNotesForBook(user.uid, String(id), currentPage).then((result) => {
+              if (result.success && result.notes) {
+                setFetchedNotes(result.notes);
+              }
+            });
+          }
+        }}
+      />
 
       {/* Selection pop-up: Highlight / Copy / Search */}
       <Modal visible={selectionPopup !== null} transparent animationType="fade">
@@ -595,22 +738,10 @@ export default function BookDetailScreen() {
                   >
                     <Text style={styles.popupButtonText}>Google</Text>
                   </Pressable>
-                  <Pressable
-                    style={styles.popupButton}
-                    onPress={() => openImageGeneration(searchModal.query)}
-                  >
-                    <Text style={styles.popupButtonText}>Generate Image</Text>
-                  </Pressable>
                 </View>
                 <Pressable style={styles.popupCancelButton} onPress={() => setSearchModal(null)}>
                   <Text style={styles.popupCancelText}>Close</Text>
                 </Pressable>
-                {imageUri && (
-                  <Image
-                    source={{ uri: imageUri }}
-                    style={{ width: 300, height: 300 }}
-                  />
-                )}
               </>
             ) : null}
           </Pressable>
@@ -1032,5 +1163,54 @@ const styles = StyleSheet.create({
   popupCancelText: {
     color: '#CCCCCC',
     fontSize: 14,
+  },
+  swipeZone: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 28,
+    zIndex: 100,
+  },
+  overlay: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    zIndex: 950,
+  },
+  loadingText: {
+    color: '#CCCCCC',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  fetchedNotesSection: {
+    marginTop: 12,
+    gap: 8,
+  },
+  fetchedNotesTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  fetchedNoteCard: {
+    backgroundColor: '#1C1C1C',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+  },
+  fetchedNoteText: {
+    color: '#FFEB3B',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  noteContent: {
+    color: '#CCCCCC',
+    fontSize: 12,
+    marginTop: 6,
+    lineHeight: 16,
   },
 });
