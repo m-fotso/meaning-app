@@ -1,9 +1,16 @@
-import React, { useRef, useState, useEffect } from "react";
-import {  StyleSheet, View, Text, Pressable, Animated, Dimensions, PanResponder, PanResponderInstance, PanResponderGestureState,
-} from "react-native";
-import { Provider, Button } from "react-native-paper";
+import { useAuth } from "@/context/AuthContext";
 import { getNotesForBook, Note } from "@/services/notesService";
-import { useAuth } from "@/app/context/AuthContext";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Animated, Dimensions, PanResponder,
+  PanResponderGestureState,
+  PanResponderInstance,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import { Button, Provider } from "react-native-paper";
 
 
 

@@ -1,5 +1,5 @@
-import { useAuth } from '@/app/context/AuthContext';
 import { ChapterNote } from '@/components/chapterNote';
+import { useAuth } from '@/context/AuthContext';
 import { getNotesForBook, Note } from '@/services/notesService';
 import Slider from '@react-native-community/slider';
 import * as Clipboard from 'expo-clipboard';
