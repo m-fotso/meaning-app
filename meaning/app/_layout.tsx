@@ -6,7 +6,7 @@ import { User } from 'firebase/auth';
 import { useEffect, useState } from 'react';
 import 'react-native-reanimated';
 
-import { AuthProvider } from '@/app/context/AuthContext';
+import { AuthProvider } from '@/context/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { onAuthChange } from '@/services/authService';
 
@@ -32,7 +32,7 @@ export default function RootLayout() {
     if (loading) return;
 
     const currentRoute = segments[0];
-    const isAuthScreen = currentRoute === 'signin' || currentRoute === 'signup' || currentRoute === 'index';
+    const isAuthScreen = currentRoute === 'signin' || currentRoute === 'signup' || currentRoute === 'home';
 
     if (!user && !isAuthScreen) {
       router.replace('/');
