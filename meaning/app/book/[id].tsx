@@ -14,6 +14,7 @@ import {
   PanResponderGestureState,
   PanResponderInstance,
   Platform,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -596,6 +597,13 @@ export default function BookDetailScreen() {
         {!loading && !error && pages.length ? (
           <View style={styles.pageList}>
             <View style={styles.pageContent}>
+              <Image
+                source={{ uri: `https://picsum.photos/seed/page-${currentPage}/800/450` }}
+                style={styles.pagePlaceholderImage}
+                resizeMode="cover"
+                accessibilityLabel="Placeholder illustration for this page"
+              />
+              <Text style={styles.pagePlaceholderCaption}>Illustration (placeholder)</Text>
               {renderText(pages[currentPage])}
             </View>
             <Text style={styles.pageIndicator}>
@@ -929,6 +937,18 @@ const styles = StyleSheet.create({
   },
   pageContent: {
     width: '100%',
+  },
+  pagePlaceholderImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 8,
+    backgroundColor: '#1A1A1A',
+  },
+  pagePlaceholderCaption: {
+    fontSize: 12,
+    color: '#888888',
+    marginBottom: 16,
   },
   annotationsOverlay: {
     position: 'absolute',
