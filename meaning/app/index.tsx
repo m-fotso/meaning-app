@@ -1,6 +1,6 @@
-import { StyleSheet, View, Pressable, Text } from 'react-native';
-import { Link, router } from 'expo-router';
 import { Fonts } from '@/constants/theme';
+import { Link, router } from 'expo-router';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 export default function WelcomeScreen() {
   return (

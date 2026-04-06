@@ -1,12 +1,17 @@
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { addBook } from '@/services/bookService';
+import { auth } from '@/services/firebaseConfig';
 import * as DocumentPicker from 'expo-document-picker';
+import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { Alert, Pressable, StyleSheet, View } from 'react-native';
 
 export default function AddBookScreen() {
+	const router = useRouter();
 	const [pdf, setPdf] = useState<any>(null);
+	const [uploading, setUploading] = useState(false);
 
 	const pickPdf = async () => {
 		try {
@@ -26,8 +31,30 @@ export default function AddBookScreen() {
 			return;
 		}
 
-		// Placeholder: integrate real upload here.
-		Alert.alert('Selected PDF', `${pdf.name}\n${pdf.size ? `${pdf.size} bytes` : ''}`);
+		const userId = auth.currentUser?.uid;
+		if (!userId) {
+			Alert.alert('Error', 'You must be signed in to add a book.');
+			return;
+		}
+
+		setUploading(true);
+		try {
+			const asset = pdf.assets?.[0] ?? pdf;
+			const title = asset.name?.replace(/\.pdf$/i, '') ?? 'Untitled';
+			const pdfPath = asset.uri ?? '';
+
+			const result = await addBook(userId, { title, pdfPath });
+			if (result.success) {
+				Alert.alert('Success', `"${title}" added to your library.`);
+				router.back();
+			} else {
+				Alert.alert('Error', result.error ?? 'Failed to add book.');
+			}
+		} catch (err: any) {
+			Alert.alert('Error', err.message ?? 'Failed to add book.');
+		} finally {
+			setUploading(false);
+		}
 	};
 
 	return (
@@ -53,9 +80,9 @@ export default function AddBookScreen() {
 					<ThemedText style={styles.hint}>No PDF chosen yet.</ThemedText>
 				)}
 
-				<Pressable style={[styles.uploadButton, !pdf && styles.disabled]} onPress={handleUpload} disabled={!pdf}>
+				<Pressable style={[styles.uploadButton, (!pdf || uploading) && styles.disabled]} onPress={handleUpload} disabled={!pdf || uploading}>
 					<ThemedText type="defaultSemiBold" style={styles.uploadButtonText}>
-						Upload
+						{uploading ? 'Adding...' : 'Add Book'}
 					</ThemedText>
 				</Pressable>
 			</View>

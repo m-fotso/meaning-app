@@ -1,20 +1,47 @@
+import { ChapterNote } from '@/components/chapterNote';
+import { useAuth } from '@/context/AuthContext';
+import { getNotesForBook, Note } from '@/services/notesService';
+import Slider from '@react-native-community/slider';
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Slider from '@react-native-community/slider';
-import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Animated,
+  Dimensions,
+  Linking,
+  Modal,
+  PanResponder,
+  PanResponderGestureState,
+  PanResponderInstance,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { getBook, updateBook } from '../../services/bookService';
 import { auth } from '../../services/firebaseConfig';
 import {
   generateTTS,
   uploadAudio,
   saveTTSMetadata,
   getCachedAudio,
+  fetchAvailableVoices,
   TTS_VOICES,
+  TTS_ENGINES,
   type TTSVoice,
+  type TTSEngine,
+  type VoiceMap,
 } from '../../services/ttsService';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const MENU_WIDTH = Math.min(320, SCREEN_WIDTH * 0.8);
 
 export default function BookDetailScreen() {
   const router = useRouter();
+  const { user, initializing } = useAuth();
   const { title, id, pdfPath } = useLocalSearchParams<{
     title?: string;
     id?: string;
@@ -31,7 +58,42 @@ export default function BookDetailScreen() {
   const [loading, setLoading] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
+  const [fetchedNotes, setFetchedNotes] = useState<Note[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
+  const [showChapterNote, setShowChapterNote] = useState(false);
+
+  // Swipe and animation refs
+  const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
+  const panResponderRef = useRef<PanResponderInstance | null>(null);
+  /// Chapter detection from page text
+  const getNewestChapterPage = (pages: string[]): number => {
+    let newestPage = -1;
+
+    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
+
+    pages.forEach((pageText, index) => {
+      if (chapterRegex.test(pageText)) {
+        newestPage = index;
+      }
+    });
+    console.log(newestPage);
+    return newestPage;
+  };
+  
+  // Get list of page indices that contain chapter headings, for chapter note association and quick navigation
+  const getChapterPages = (pages: string[]): number[] => {
+    const chapterRegex = /\b(chapter\s+\d+|chapter\s+[ivxlcdm]+)\b/i;
+    const chapterPages: number[] = [];
+
+    pages.forEach((pageText, index) => {
+      if (chapterRegex.test(pageText)) {
+        chapterPages.push(index);
+      }
+    });
+    console.log(chapterPages);
+    return chapterPages;
+  };
 
   // Range highlights: page -> list of { id, text } (exact text only, not full segment)
   const [rangeHighlightsByPage, setRangeHighlightsByPage] = useState<
@@ -45,55 +107,188 @@ export default function BookDetailScreen() {
   } | null>(null);
   // Search modal: show YouTube/Google links for selected text
   const [searchModal, setSearchModal] = useState<{ query: string } | null>(null);
+  // Debounce timer for saving page progress to Firestore
+  const savePageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [savedPageRestored, setSavedPageRestored] = useState(false);
+
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
   // TTS state
   const [selectedVoice, setSelectedVoice] = useState<TTSVoice>('Normal');
+  const [selectedEngine, setSelectedEngine] = useState<TTSEngine>('Piper');
+  const [selectedVoiceId, setSelectedVoiceId] = useState('');
+  const [piperVoices, setPiperVoices] = useState<VoiceMap>({});
+  const [azureVoices, setAzureVoices] = useState<VoiceMap>({});
   const [showVoicePicker, setShowVoicePicker] = useState(false);
   const [ttsLoading, setTtsLoading] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [showPlayer, setShowPlayer] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Track which settings produced the currently loaded audio
+  const audioSettingsRef = useRef<{ voice: TTSVoice; engine: TTSEngine; voiceId: string } | null>(null);
+
+  // Whether TTS controls (speed, engine, voice) should be locked — only while actively playing or loading
+  const ttsLocked = isPlaying || ttsLoading;
+
+  // Whether the user changed settings since the current audio was generated
+  const settingsChanged = audioSettingsRef.current !== null && (
+    audioSettingsRef.current.voice !== selectedVoice ||
+    audioSettingsRef.current.engine !== selectedEngine ||
+    audioSettingsRef.current.voiceId !== selectedVoiceId
+  );
+
+  // Current voice map based on selected engine
+  const currentVoiceMap = selectedEngine === 'Azure' ? azureVoices : piperVoices;
+  // Display name for selected voice
+  const selectedVoiceLabel = selectedVoiceId && currentVoiceMap[selectedVoiceId]
+    ? currentVoiceMap[selectedVoiceId]
+    : Object.values(currentVoiceMap)[0] || 'Default';
+
+  // Fetch available voices from TTS server on mount
   useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-    };
+    fetchAvailableVoices().then(({ piper, azure }) => {
+      setPiperVoices(piper);
+      setAzureVoices(azure);
+      // Set default voice IDs
+      const firstPiper = Object.keys(piper)[0] || '';
+      const firstAzure = Object.keys(azure)[0] || '';
+      setSelectedVoiceId(firstPiper);
+      // Store defaults for engine switching
+      piperDefaultRef.current = firstPiper;
+      azureDefaultRef.current = firstAzure;
+    });
   }, []);
 
+  const piperDefaultRef = useRef('');
+  const azureDefaultRef = useRef('');
+
+  // When engine changes, switch to that engine's default voice
   useEffect(() => {
+    if (selectedEngine === 'Azure') {
+      setSelectedVoiceId(azureDefaultRef.current);
+    } else {
+      setSelectedVoiceId(piperDefaultRef.current);
+    }
+  }, [selectedEngine]);
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const startProgressTracking = (audio: HTMLAudioElement) => {
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    progressIntervalRef.current = setInterval(() => {
+      if (audio && !Number.isNaN(audio.duration)) {
+        setAudioCurrentTime(audio.currentTime);
+        setAudioDuration(audio.duration);
+        setAudioProgress(audio.duration > 0 ? audio.currentTime / audio.duration : 0);
+      }
+    }, 250);
+  };
+
+  const stopProgressTracking = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+  };
+
+  const cleanupAudio = () => {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
+    stopProgressTracking();
     setIsPlaying(false);
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
+    setAudioDuration(0);
+    audioSettingsRef.current = null;
+  };
+
+  useEffect(() => {
+    return () => {
+      cleanupAudio();
+    };
+  }, []);
+
+  useEffect(() => {
+    cleanupAudio();
+    setShowPlayer(false);
   }, [currentPage]);
 
-  const handleListen = async () => {
-    if (isPlaying && audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-      setIsPlaying(false);
+  const handlePlayPause = () => {
+    if (ttsLoading) return;
+
+    // If settings changed since current audio was generated, regenerate
+    if (settingsChanged && !isPlaying) {
+      generateAndPlay();
       return;
     }
 
+    if (!audioRef.current) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+      stopProgressTracking();
+      setIsPlaying(false);
+    } else {
+      audioRef.current.play();
+      startProgressTracking(audioRef.current);
+      setIsPlaying(true);
+    }
+  };
+
+  const handleSeek = (value: number) => {
+    if (audioRef.current && audioDuration > 0) {
+      audioRef.current.currentTime = value * audioDuration;
+      setAudioCurrentTime(audioRef.current.currentTime);
+      setAudioProgress(value);
+    }
+  };
+
+  const handleStopTTS = () => {
+    cleanupAudio();
+    setShowPlayer(false);
+  };
+
+  const generateAndPlay = async () => {
+    // Use the parser's page-by-page output directly
     const pageText = pages[currentPage];
     if (!pageText) return;
 
+    // Stop any existing audio first
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    stopProgressTracking();
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
+    setAudioDuration(0);
+
     const userId = auth.currentUser?.uid;
     const bookId = id ?? 'unknown';
-    console.log('[TTS] userId:', userId, 'bookId:', bookId, 'page:', currentPage, 'voice:', selectedVoice);
+    const curVoice = selectedVoice;
+    const curEngine = selectedEngine;
+    const curVoiceId = selectedVoiceId;
+    console.log('[TTS] userId:', userId, 'bookId:', bookId, 'page:', currentPage, 'voice:', curVoice, 'engine:', curEngine, 'voiceId:', curVoiceId);
 
     setTtsLoading(true);
+    setShowPlayer(true);
     try {
-      // Check cache first
+      // Check cache (keyed by engine + speed + voiceId + page)
       let audioUrl: string | null = null;
       if (userId) {
         try {
-          audioUrl = await getCachedAudio(userId, bookId, currentPage, selectedVoice);
+          audioUrl = await getCachedAudio(userId, bookId, currentPage, curVoice, curEngine, curVoiceId);
           if (audioUrl) {
             console.log('[TTS] Playing from cache');
           }
@@ -104,27 +299,40 @@ export default function BookDetailScreen() {
 
       let audioBlob: Blob | null = null;
       if (!audioUrl) {
-        console.log('[TTS] Generating fresh audio...');
-        audioBlob = await generateTTS(pageText, selectedVoice);
+        console.log(`[TTS] Generating fresh audio with ${curEngine} voice=${curVoiceId}...`);
+        audioBlob = await generateTTS(pageText, curVoice, curEngine, curVoiceId);
         audioUrl = URL.createObjectURL(audioBlob);
       }
 
       // Play immediately — don't wait for upload
       const audio = new window.Audio(audioUrl);
       audioRef.current = audio;
-      audio.onended = () => setIsPlaying(false);
-      audio.onerror = () => setIsPlaying(false);
+      // Record which settings produced this audio
+      audioSettingsRef.current = { voice: curVoice, engine: curEngine, voiceId: curVoiceId };
+      audio.onended = () => {
+        setIsPlaying(false);
+        stopProgressTracking();
+        setAudioProgress(1);
+      };
+      audio.onerror = () => {
+        setIsPlaying(false);
+        stopProgressTracking();
+      };
+      audio.onloadedmetadata = () => {
+        setAudioDuration(audio.duration);
+      };
       await audio.play();
+      startProgressTracking(audio);
       setIsPlaying(true);
       setTtsLoading(false);
 
       // Upload to Firebase in background (non-blocking)
       if (audioBlob && userId) {
         console.log('[TTS] Uploading to Firebase...');
-        uploadAudio(userId, bookId, currentPage, selectedVoice, audioBlob)
+        uploadAudio(userId, bookId, currentPage, curVoice, audioBlob, curEngine, curVoiceId)
           .then((url) => {
             console.log('[TTS] Uploaded, saving metadata...');
-            return saveTTSMetadata(userId, bookId, currentPage, selectedVoice, url);
+            return saveTTSMetadata(userId, bookId, currentPage, curVoice, url, curEngine, curVoiceId);
           })
           .then(() => console.log('[TTS] Cached successfully'))
           .catch((e) => console.error('[TTS] Cache upload failed:', e));
@@ -135,7 +343,16 @@ export default function BookDetailScreen() {
       console.error('TTS error:', err);
       setError(err instanceof Error ? err.message : 'TTS playback failed');
       setTtsLoading(false);
+      setShowPlayer(false);
     }
+  };
+
+  const handleListen = async () => {
+    if (showPlayer) {
+      handleStopTTS();
+      return;
+    }
+    generateAndPlay();
   };
 
   useEffect(() => {
@@ -203,6 +420,53 @@ export default function BookDetailScreen() {
     fetchText();
   }, [pdfPath]);
 
+  // Restore saved page from Firestore after pages are loaded
+  useEffect(() => {
+    if (pages.length === 0 || savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) {
+      setSavedPageRestored(true);
+      return;
+    }
+    getBook(userId, bookId).then((result) => {
+      if (result.success && result.book) {
+        const saved = result.book.currentPage;
+        if (saved > 0 && saved < pages.length) {
+          setCurrentPage(saved);
+        }
+        // Save totalPages if it changed
+        if (result.book.totalPages !== pages.length) {
+          updateBook(userId, bookId, { totalPages: pages.length });
+        }
+      } else {
+        // Book doc doesn't exist yet — save totalPages
+        updateBook(userId, bookId, { totalPages: pages.length }).catch(() => { });
+      }
+      setSavedPageRestored(true);
+    });
+  }, [pages.length, savedPageRestored, id]);
+
+  // Debounced save of currentPage to Firestore on page change
+  useEffect(() => {
+    if (!savedPageRestored) return;
+    const userId = auth.currentUser?.uid;
+    const bookId = id;
+    if (!userId || !bookId) return;
+
+    if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    savePageTimerRef.current = setTimeout(() => {
+      updateBook(userId, bookId, {
+        currentPage,
+        lastReadAt: new Date().toISOString(),
+      });
+    }, 500);
+
+    return () => {
+      if (savePageTimerRef.current) clearTimeout(savePageTimerRef.current);
+    };
+  }, [currentPage, savedPageRestored, id]);
+
   useEffect(() => {
     if (!loading || startTime === null) {
       return;
@@ -212,6 +476,114 @@ export default function BookDetailScreen() {
     }, 200);
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
+
+  // Animation effect for menu slide-in/out
+  useEffect(() => {
+    Animated.timing(menuAnimRef, {
+      toValue: showAnnotations ? 1 : 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [showAnnotations, menuAnimRef]);
+
+  // Fetch notes from service
+  useEffect(() => {
+    if (initializing) {
+      return;
+    }
+    if (!user || !id) {
+      setFetchedNotes([]);
+      return;
+    }
+
+    let mounted = true;
+    const fetchNotes = async () => {
+      setNotesLoading(true);
+      const result = await getNotesForBook(user.uid, String(id), currentPage);
+      if (!mounted) return;
+      if (result.success && result.notes) {
+        setFetchedNotes(result.notes);
+      } else {
+        console.error('Failed to fetch notes:', result.error);
+        setFetchedNotes([]);
+      }
+      setNotesLoading(false);
+    };
+    fetchNotes();
+
+    return () => {
+      mounted = false;
+    };
+  }, [user, initializing, id, currentPage]);
+
+  // Initialize PanResponder for left-swipe detection
+  useEffect(() => {
+    panResponderRef.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
+        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
+      },
+      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
+        if (gestureState.dx < -50) {
+          setShowAnnotations(true);
+        }
+      },
+    });
+  }, []);
+
+  // Animation effect for menu slide-in/out
+  useEffect(() => {
+    Animated.timing(menuAnimRef, {
+      toValue: showAnnotations ? 1 : 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [showAnnotations, menuAnimRef]);
+
+  // Fetch notes from service
+  useEffect(() => {
+    if (initializing) {
+      return;
+    }
+    if (!user || !id) {
+      setFetchedNotes([]);
+      return;
+    }
+
+    let mounted = true;
+    const fetchNotes = async () => {
+      setNotesLoading(true);
+      const result = await getNotesForBook(user.uid, String(id), currentPage);
+      if (!mounted) return;
+      if (result.success && result.notes) {
+        setFetchedNotes(result.notes);
+      } else {
+        console.error('Failed to fetch notes:', result.error);
+        setFetchedNotes([]);
+      }
+      setNotesLoading(false);
+    };
+    fetchNotes();
+
+    return () => {
+      mounted = false;
+    };
+  }, [user, initializing, id, currentPage]);
+
+  // Initialize PanResponder for left-swipe detection
+  useEffect(() => {
+    panResponderRef.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
+        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
+      },
+      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
+        if (gestureState.dx < -50) {
+          setShowAnnotations(true);
+        }
+      },
+    });
+  }, []);
 
   const handleAddAnnotation = () => {
     const trimmed = newAnnotation.trim();
@@ -460,15 +832,24 @@ export default function BookDetailScreen() {
 
   return (
     <View style={styles.screen}>
+      {/* Right-edge invisible swipe zone for gesture detection */}
+      {panResponderRef.current && (
+        <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
+      )}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
       >
-      <Pressable onPress={() => router.back()} style={styles.backButton}>
-        <Text style={styles.backText}>Back</Text>
-      </Pressable>
-      <Text style={styles.title}>{displayTitle}</Text>
+        <Pressable onPress={() => router.back()} style={styles.backButton}>
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
+
+
+
+
+
+        <Text style={styles.title}>{displayTitle}</Text>
         {(annotationsByPage[currentPage]?.length ?? 0) > 0 ? (
           <Pressable
             style={styles.seeAnnotationsButton}
@@ -479,13 +860,13 @@ export default function BookDetailScreen() {
             <Text style={styles.seeAnnotationsText}>See annotations</Text>
           </Pressable>
         ) : null}
-      {loading ? (
-        <Text style={styles.subtitle}>
-          Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
-        </Text>
-      ) : null}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {!loading && !error && pages.length ? (
+        {loading ? (
+          <Text style={styles.subtitle}>
+            Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
+          </Text>
+        ) : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {!loading && !error && pages.length ? (
           <View style={styles.pageList}>
             <View style={styles.pageContent}>
               {renderText(pages[currentPage])}
@@ -499,121 +880,170 @@ export default function BookDetailScreen() {
                 : 'Long-press any phrase to highlight or search'}
             </Text>
           </View>
-      ) : (
-        !loading &&
-        !error && <Text style={styles.subtitle}>Book detail page</Text>
-      )}
+        ) : (
+          !loading &&
+          !error && <Text style={styles.subtitle}>Book detail page</Text>
+        )}
       </ScrollView>
       {showAnnotations ? (
-        <View style={styles.annotationsOverlay}>
-          <View style={styles.annotationsPanel}>
-            <View style={styles.annotationsHeader}>
-              <View>
-                <Text style={styles.annotationsTitle}>Annotations</Text>
-                <Text style={styles.annotationsSubtitle}>
-                  Page {currentPage + 1} of {pages.length}
-                </Text>
-              </View>
-              <Pressable style={styles.addAnnotationButton} onPress={() => setIsAddingAnnotation(true)}>
-                <Text style={styles.addAnnotationText}>+</Text>
-              </Pressable>
-            </View>
-            {isAddingAnnotation ? (
-              <View style={styles.annotationInputRow}>
-                <TextInput
-                  value={newAnnotation}
-                  onChangeText={setNewAnnotation}
-                  placeholder="Type an annotation"
-                  placeholderTextColor="#777777"
-                  style={styles.annotationInput}
-                  multiline
-                />
-                <View style={styles.annotationInputActions}>
-                  <Pressable style={styles.annotationSaveButton} onPress={handleAddAnnotation}>
-                    <Text style={styles.annotationSaveText}>Add</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.annotationCancelButton}
-                    onPress={() => {
-                      setNewAnnotation('');
-                      setIsAddingAnnotation(false);
-                    }}
-                  >
-                    <Text style={styles.annotationCancelText}>Cancel</Text>
-                  </Pressable>
+        <>
+          <Pressable style={styles.overlay} onPress={() => setShowAnnotations(false)} />
+          <View style={styles.annotationsOverlay}>
+            <Animated.View
+              style={[
+                styles.annotationsPanel,
+                {
+                  width: MENU_WIDTH,
+                  transform: [
+                    {
+                      translateX: menuAnimRef.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [MENU_WIDTH, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            >
+              <View style={styles.annotationsHeader}>
+                <View>
+                  <Text style={styles.annotationsTitle}>Annotations</Text>
+                  <Text style={styles.annotationsSubtitle}>
+                    Page {currentPage + 1} of {pages.length}
+                  </Text>
                 </View>
+                <Pressable style={styles.addAnnotationButton} onPress={() => setIsAddingAnnotation(true)}>
+                  <Text style={styles.addAnnotationText}>+</Text>
+                </Pressable>
               </View>
-            ) : null}
-            <View style={styles.annotationNav}>
-              <Pressable
-                style={[styles.annotationArrow, currentPage === 0 && styles.pageButtonDisabled]}
-                onPress={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
-                disabled={currentPage === 0}
-              >
-                <Text style={styles.annotationArrowText}>‹</Text>
-              </Pressable>
-              <Text style={styles.annotationCount}>Page {currentPage + 1}</Text>
-              <Pressable
-                style={[
-                  styles.annotationArrow,
-                  currentPage >= pages.length - 1 && styles.pageButtonDisabled,
-                ]}
-                onPress={() => setCurrentPage((prev) => Math.min(pages.length - 1, prev + 1))}
-                disabled={currentPage >= pages.length - 1}
-              >
-                <Text style={styles.annotationArrowText}>›</Text>
-              </Pressable>
-            </View>
-            <ScrollView style={styles.annotationsList} keyboardShouldPersistTaps="handled">
-              {currentAnnotations.length ? (
-                currentAnnotations.map((annotation, index) => (
-                  <View key={index} style={styles.annotationCard}>
-                    <Text style={styles.annotationText}>{annotation}</Text>
-                  </View>
-                ))
-              ) : (
-                <Text style={styles.annotationsEmpty}>No annotations yet.</Text>
-              )}
-            </ScrollView>
-            {currentRangeHighlights.length > 0 ? (
-              <View style={styles.highlightsSection}>
-                <Text style={styles.highlightsTitle}>Highlights</Text>
-                {currentRangeHighlights.map((h) => (
-                  <View key={h.id} style={styles.highlightItem}>
-                    <Pressable
-                      onPress={() =>
-                        setSelectionPopup({ segmentIndex: null, text: h.text, rangeHighlightId: h.id })
-                      }
-                      style={styles.highlightItemTextWrap}
-                    >
-                      <Text style={styles.highlightItemText} numberOfLines={2}>{h.text}</Text>
+              {isAddingAnnotation ? (
+                <View style={styles.annotationInputRow}>
+                  <TextInput
+                    value={newAnnotation}
+                    onChangeText={setNewAnnotation}
+                    placeholder="Type an annotation"
+                    placeholderTextColor="#777777"
+                    style={styles.annotationInput}
+                    multiline
+                  />
+                  <View style={styles.annotationInputActions}>
+                    <Pressable style={styles.annotationSaveButton} onPress={handleAddAnnotation}>
+                      <Text style={styles.annotationSaveText}>Add</Text>
                     </Pressable>
                     <Pressable
-                      style={styles.highlightSearchButton}
-                      onPress={() => openSearchModal(h.text)}
+                      style={styles.annotationCancelButton}
+                      onPress={() => {
+                        setNewAnnotation('');
+                        setIsAddingAnnotation(false);
+                      }}
                     >
-                      <Text style={styles.highlightSearchButtonText}>Search</Text>
+                      <Text style={styles.annotationCancelText}>Cancel</Text>
                     </Pressable>
                   </View>
-                ))}
+                </View>
+              ) : null}
+              <View style={styles.annotationNav}>
+                <Pressable
+                  style={[styles.annotationArrow, currentPage === 0 && styles.pageButtonDisabled]}
+                  onPress={() => setCurrentPage((prev) => Math.max(0, prev - 1))}
+                  disabled={currentPage === 0}
+                >
+                  <Text style={styles.annotationArrowText}>‹</Text>
+                </Pressable>
+                <Text style={styles.annotationCount}>Page {currentPage + 1}</Text>
+                <Pressable
+                  style={[
+                    styles.annotationArrow,
+                    currentPage >= pages.length - 1 && styles.pageButtonDisabled,
+                  ]}
+                  onPress={() => setCurrentPage((prev) => Math.min(pages.length - 1, prev + 1))}
+                  disabled={currentPage >= pages.length - 1}
+                >
+                  <Text style={styles.annotationArrowText}>›</Text>
+                </Pressable>
               </View>
-            ) : null}
-            <View style={styles.pageSlider}>
-              <Text style={styles.pageSliderLabel}>Jump to page {currentPage + 1}</Text>
-              <Slider
-                minimumValue={0}
-                maximumValue={Math.max(0, pages.length - 1)}
-                step={1}
-                value={currentPage}
-                onValueChange={(value: number) => setCurrentPage(Math.round(value))}
-                minimumTrackTintColor="#FFFFFF"
-                maximumTrackTintColor="#333333"
-                thumbTintColor="#FFFFFF"
-              />
-            </View>
+              <ScrollView style={styles.annotationsList} keyboardShouldPersistTaps="handled">
+                {currentAnnotations.length ? (
+                  currentAnnotations.map((annotation, index) => (
+                    <View key={index} style={styles.annotationCard}>
+                      <Text style={styles.annotationText}>{annotation}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.annotationsEmpty}>No annotations yet.</Text>
+                )}
+                {notesLoading && <Text style={styles.loadingText}>Loading notes…</Text>}
+                {!notesLoading && fetchedNotes.length > 0 && (
+                  <View style={styles.fetchedNotesSection}>
+                    <Text style={styles.fetchedNotesTitle}>Service Notes</Text>
+                    {fetchedNotes.map((note) => (
+                      <View key={note.id} style={styles.fetchedNoteCard}>
+                        <Text style={styles.fetchedNoteText}>{note.highlightedText}</Text>
+                        {note.userNote && <Text style={styles.noteContent}>{note.userNote}</Text>}
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </ScrollView>
+              {currentRangeHighlights.length > 0 ? (
+                <View style={styles.highlightsSection}>
+                  <Text style={styles.highlightsTitle}>Highlights</Text>
+                  {currentRangeHighlights.map((h) => (
+                    <View key={h.id} style={styles.highlightItem}>
+                      <Pressable
+                        onPress={() =>
+                          setSelectionPopup({ segmentIndex: null, text: h.text, rangeHighlightId: h.id })
+                        }
+                        style={styles.highlightItemTextWrap}
+                      >
+                        <Text style={styles.highlightItemText} numberOfLines={2}>{h.text}</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.highlightSearchButton}
+                        onPress={() => openSearchModal(h.text)}
+                      >
+                        <Text style={styles.highlightSearchButtonText}>Search</Text>
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+              <View style={styles.pageSlider}>
+                <Text style={styles.pageSliderLabel}>Jump to page {currentPage + 1}</Text>
+                <Slider
+                  minimumValue={0}
+                  maximumValue={Math.max(0, pages.length - 1)}
+                  step={1}
+                  value={currentPage}
+                  onValueChange={(value: number) => setCurrentPage(Math.round(value))}
+                  minimumTrackTintColor="#FFFFFF"
+                  maximumTrackTintColor="#333333"
+                  thumbTintColor="#FFFFFF"
+                />
+              </View>
+            </Animated.View>
           </View>
-        </View>
+        </>
       ) : null}
+
+      {/* Chapter Notes Modal */}
+      <ChapterNote
+        visible={showChapterNote}
+        onClose={() => setShowChapterNote(false)}
+        userId={user?.uid ?? ''}
+        bookId={String(id)}
+        currentPage={currentPage}
+        onSaveSuccess={() => {
+          // Refetch notes after save
+          if (user && id) {
+            getNotesForBook(user.uid, String(id), currentPage).then((result) => {
+              if (result.success && result.notes) {
+                setFetchedNotes(result.notes);
+              }
+            });
+          }
+        }}
+      />
 
       {/* Selection pop-up: Highlight / Copy / Search */}
       <Modal visible={selectionPopup !== null} transparent animationType="fade">
@@ -701,17 +1131,9 @@ export default function BookDetailScreen() {
           disabled={ttsLoading || !pages.length}
         >
           <Text style={styles.actionText}>
-            {ttsLoading ? 'Loading...' : isPlaying ? 'Stop' : 'Listen'}
+            {showPlayer ? 'Close' : 'Listen'}
           </Text>
         </Pressable>
-        {(isPlaying || ttsLoading) ? (
-          <Pressable
-            style={styles.voiceButton}
-            onPress={() => setShowVoicePicker(true)}
-          >
-            <Text style={styles.voiceButtonText}>{selectedVoice}</Text>
-          </Pressable>
-        ) : null}
         <Pressable
           style={[
             styles.actionButton,
@@ -724,7 +1146,90 @@ export default function BookDetailScreen() {
         </Pressable>
       </View>
 
-      {/* Voice picker modal */}
+      {/* TTS Player Bar */}
+      {showPlayer && (
+        <View style={styles.playerBar}>
+          {/* Row 1: playback controls */}
+          <View style={styles.playerRow}>
+            <Pressable
+              style={[styles.playerPlayBtn, ttsLoading && styles.playerPlayBtnDisabled]}
+              onPress={handlePlayPause}
+              disabled={ttsLoading || !audioRef.current}
+            >
+              <Text style={styles.playerPlayBtnText}>
+                {ttsLoading ? '...' : isPlaying ? '\u275A\u275A' : settingsChanged ? '\u21BB' : '\u25B6'}
+              </Text>
+            </Pressable>
+            <View style={styles.playerProgressWrap}>
+              <Slider
+                style={styles.playerSlider}
+                minimumValue={0}
+                maximumValue={1}
+                value={audioProgress}
+                onSlidingComplete={handleSeek}
+                minimumTrackTintColor="#FFFFFF"
+                maximumTrackTintColor="#333333"
+                thumbTintColor="#FFFFFF"
+                disabled={ttsLoading || !audioRef.current}
+              />
+              <View style={styles.playerTimeRow}>
+                <Text style={styles.playerTimeText}>{formatTime(audioCurrentTime)}</Text>
+                <Text style={styles.playerTimeText}>{formatTime(audioDuration)}</Text>
+              </View>
+            </View>
+            <Pressable style={styles.playerCloseBtn} onPress={handleStopTTS}>
+              <Text style={styles.playerCloseBtnText}>{'\u2715'}</Text>
+            </Pressable>
+          </View>
+
+          {/* Row 2: settings chips — disabled while playing/loading */}
+          <View style={styles.playerChipsRow}>
+            <Pressable
+              style={[styles.playerChip, ttsLocked && styles.playerChipDisabled]}
+              onPress={() => { if (!ttsLocked) setShowVoicePicker(true); }}
+              disabled={ttsLocked}
+            >
+              <Text style={[styles.playerChipText, ttsLocked && styles.playerChipTextDisabled]}>
+                {selectedVoiceLabel}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.playerChip, ttsLocked && styles.playerChipDisabled]}
+              onPress={() => { if (!ttsLocked) setShowVoicePicker(true); }}
+              disabled={ttsLocked}
+            >
+              <Text style={[styles.playerChipText, ttsLocked && styles.playerChipTextDisabled]}>
+                {selectedVoice}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.playerChip,
+                selectedEngine === 'Azure' && !ttsLocked && styles.playerChipPremium,
+                ttsLocked && styles.playerChipDisabled,
+              ]}
+              onPress={() => { if (!ttsLocked) setShowVoicePicker(true); }}
+              disabled={ttsLocked}
+            >
+              <Text style={[
+                styles.playerChipText,
+                selectedEngine === 'Azure' && !ttsLocked && styles.playerChipTextPremium,
+                ttsLocked && styles.playerChipTextDisabled,
+              ]}>
+                {selectedEngine === 'Azure' ? 'Premium' : 'Standard'}
+              </Text>
+            </Pressable>
+            {ttsLocked && isPlaying && (
+              <Text style={styles.playerLockHint}>Pause to change settings</Text>
+            )}
+            {settingsChanged && !isPlaying && !ttsLoading && (
+              <Text style={styles.playerLockHint}>Press play to regenerate</Text>
+            )}
+          </View>
+        </View>
+      )}
+
+      {/* TTS Settings modal */}
       <Modal
         visible={showVoicePicker}
         transparent
@@ -732,30 +1237,94 @@ export default function BookDetailScreen() {
         onRequestClose={() => setShowVoicePicker(false)}
       >
         <Pressable style={styles.modalOverlay} onPress={() => setShowVoicePicker(false)}>
-          <View style={styles.voicePickerPanel}>
-            <Text style={styles.voicePickerTitle}>Select Voice</Text>
-            {TTS_VOICES.map((voice) => (
-              <Pressable
-                key={voice}
-                style={[
-                  styles.voiceOption,
-                  voice === selectedVoice && styles.voiceOptionSelected,
-                ]}
-                onPress={() => {
-                  setSelectedVoice(voice);
-                  setShowVoicePicker(false);
-                }}
-              >
-                <Text
+          <View style={styles.voicePickerPanel} onStartShouldSetResponder={() => true}>
+            <Text style={styles.voicePickerTitle}>TTS Settings</Text>
+
+            {/* Engine selection */}
+            <View style={styles.voicePickerSection}>
+              <Text style={styles.voicePickerSectionTitle}>Engine</Text>
+              {TTS_ENGINES.map((engine) => (
+                <Pressable
+                  key={engine}
                   style={[
-                    styles.voiceOptionText,
-                    voice === selectedVoice && styles.voiceOptionTextSelected,
+                    styles.voiceOption,
+                    engine === selectedEngine && styles.voiceOptionSelected,
                   ]}
+                  onPress={() => setSelectedEngine(engine)}
                 >
-                  {voice}
-                </Text>
-              </Pressable>
-            ))}
+                  <Text
+                    style={[
+                      styles.voiceOptionText,
+                      engine === selectedEngine && styles.voiceOptionTextSelected,
+                    ]}
+                  >
+                    {engine === 'Piper' ? 'Standard (Piper)' : 'Premium (Azure)'}
+                    {engine === 'Azure' ? <Text style={styles.premiumBadge}> PREMIUM</Text> : null}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {/* Voice selection */}
+            <View style={styles.voicePickerSection}>
+              <Text style={styles.voicePickerSectionTitle}>Voice</Text>
+              <ScrollView style={styles.voiceListScroll} nestedScrollEnabled>
+                {Object.entries(currentVoiceMap).map(([vId, label]) => (
+                  <Pressable
+                    key={vId}
+                    style={[
+                      styles.voiceOption,
+                      vId === selectedVoiceId && styles.voiceOptionSelected,
+                    ]}
+                    onPress={() => setSelectedVoiceId(vId)}
+                  >
+                    <Text
+                      style={[
+                        styles.voiceOptionText,
+                        vId === selectedVoiceId && styles.voiceOptionTextSelected,
+                      ]}
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+                ))}
+                {Object.keys(currentVoiceMap).length === 0 && (
+                  <Text style={styles.voiceOptionText}>No voices available</Text>
+                )}
+              </ScrollView>
+            </View>
+
+            {/* Speed selection */}
+            <View style={styles.voicePickerSection}>
+              <Text style={styles.voicePickerSectionTitle}>Speed</Text>
+              {TTS_VOICES.map((v) => (
+                <Pressable
+                  key={v}
+                  style={[
+                    styles.voiceOption,
+                    v === selectedVoice && styles.voiceOptionSelected,
+                  ]}
+                  onPress={() => setSelectedVoice(v)}
+                >
+                  <Text
+                    style={[
+                      styles.voiceOptionText,
+                      v === selectedVoice && styles.voiceOptionTextSelected,
+                    ]}
+                  >
+                    {v}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {/* Done button */}
+            <Pressable
+              style={styles.voicePickerDone}
+              onPress={() => setShowVoicePicker(false)}
+            >
+              <Text style={styles.voicePickerDoneText}>Done</Text>
+            </Pressable>
           </View>
         </Pressable>
       </Modal>
@@ -777,7 +1346,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingTop: 60,
     paddingHorizontal: 24,
-    paddingBottom: 120,
+    paddingBottom: 180,
     backgroundColor: '#000000',
     alignItems: 'center',
   },
@@ -1059,7 +1628,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 16,
-    paddingVertical: 16,
+    paddingVertical: 12,
     paddingHorizontal: 24,
     backgroundColor: '#000000',
     borderTopWidth: 1,
@@ -1142,18 +1711,104 @@ const styles = StyleSheet.create({
     color: '#CCCCCC',
     fontSize: 14,
   },
-  voiceButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+  // ── TTS Player Bar ──
+  playerBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 56,
+    backgroundColor: '#0A0A0A',
+    borderTopWidth: 1,
+    borderTopColor: '#1A1A1A',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  playerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  playerPlayBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playerPlayBtnDisabled: {
+    backgroundColor: '#333333',
+  },
+  playerPlayBtnText: {
+    color: '#000000',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  playerProgressWrap: {
+    flex: 1,
+  },
+  playerSlider: {
+    width: '100%',
+    height: 24,
+  },
+  playerTimeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: -4,
+    paddingHorizontal: 2,
+  },
+  playerTimeText: {
+    color: '#666666',
+    fontSize: 11,
+  },
+  playerCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#1A1A1A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playerCloseBtnText: {
+    color: '#888888',
+    fontSize: 14,
+  },
+  playerChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  playerChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
     borderRadius: 999,
     backgroundColor: '#1A1A1A',
     borderWidth: 1,
     borderColor: '#333333',
   },
-  voiceButtonText: {
+  playerChipDisabled: {
+    opacity: 0.35,
+  },
+  playerChipPremium: {
+    borderColor: '#FFD700',
+  },
+  playerChipText: {
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '600',
+  },
+  playerChipTextDisabled: {
+    color: '#666666',
+  },
+  playerChipTextPremium: {
+    color: '#FFD700',
+  },
+  playerLockHint: {
+    color: '#555555',
+    fontSize: 11,
+    marginLeft: 4,
   },
   modalOverlay: {
     flex: 1,
@@ -1162,7 +1817,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   voicePickerPanel: {
-    width: 260,
+    width: 280,
     backgroundColor: '#111111',
     borderRadius: 16,
     padding: 16,
@@ -1175,6 +1830,31 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 12,
     textAlign: 'center',
+  },
+  voicePickerSection: {
+    marginBottom: 12,
+  },
+  voicePickerSectionTitle: {
+    color: '#888888',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+  voiceListScroll: {
+    maxHeight: 160,
+  },
+  voicePickerDone: {
+    marginTop: 4,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+  },
+  voicePickerDoneText: {
+    color: '#111111',
+    fontSize: 14,
+    fontWeight: '600',
   },
   voiceOption: {
     paddingVertical: 10,
@@ -1192,5 +1872,60 @@ const styles = StyleSheet.create({
   voiceOptionTextSelected: {
     color: '#111111',
     fontWeight: '600',
+  },
+  premiumBadge: {
+    color: '#FFD700',
+    fontSize: 11,
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  swipeZone: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 28,
+    zIndex: 100,
+  },
+  overlay: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    zIndex: 950,
+  },
+  loadingText: {
+    color: '#CCCCCC',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  fetchedNotesSection: {
+    marginTop: 12,
+    gap: 8,
+  },
+  fetchedNotesTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  fetchedNoteCard: {
+    backgroundColor: '#1C1C1C',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+  },
+  fetchedNoteText: {
+    color: '#FFEB3B',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  noteContent: {
+    color: '#CCCCCC',
+    fontSize: 12,
+    marginTop: 6,
+    lineHeight: 16,
   },
 });
