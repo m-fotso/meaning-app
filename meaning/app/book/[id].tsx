@@ -38,7 +38,9 @@ export default function BookDetailScreen() {
   }>();
   const displayTitle = title ?? `Book ${id ?? ''}`;
   const [pages, setPages] = useState<string[]>([]);
-  const [currentPage, setCurrentPage] = useState(0);
+  const [currentPage, setCurrentPage] = useState(0)
+  const [newestPage, setNewestPage] = useState<number>(-1);
+  const [chapterPages, setChapterPages] = useState<number[]>([]);;
   const [showAnnotations, setShowAnnotations] = useState(false);
   const [annotationsByPage, setAnnotationsByPage] = useState<Record<number, string[]>>({});
   const [newAnnotation, setNewAnnotation] = useState('');
@@ -51,6 +53,7 @@ export default function BookDetailScreen() {
   const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
   const [showChapterNote, setShowChapterNote] = useState(false);
+  
 
   // Swipe and animation refs
   const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
@@ -312,6 +315,33 @@ export default function BookDetailScreen() {
     });
   }, []);
 
+  //find current page and chapter
+  useEffect(() => {
+    setChapterPages(getChapterPages(pages));
+  }, [pages]);
+  
+  const prevPageRef = useRef(0);
+  const hasInitializedChapterWatcherRef = useRef(false);
+
+  useEffect(() => {
+  if (!hasInitializedChapterWatcherRef.current) {
+    hasInitializedChapterWatcherRef.current = true;
+    prevPageRef.current = currentPage;
+    return;
+  }
+
+  const movedToDifferentPage = currentPage !== prevPageRef.current;
+  const enteredChapterStart = chapterPages.includes(currentPage);
+
+  if (movedToDifferentPage && enteredChapterStart) {
+    setShowChapterNote(true);
+  }
+
+  prevPageRef.current = currentPage;
+}, [currentPage, chapterPages]);
+
+
+
   const handleAddAnnotation = () => {
     const trimmed = newAnnotation.trim();
     if (!trimmed.length) {
@@ -325,6 +355,8 @@ export default function BookDetailScreen() {
     setIsAddingAnnotation(false);
   };
 
+
+  
   const maxChunkLen = 120;
 
   // Split a single line into segments (sentences; cap length for long runs)
@@ -384,6 +416,12 @@ export default function BookDetailScreen() {
   const handleCopy = async (text: string) => {
     await Clipboard.setStringAsync(text);
     setSelectionPopup(null);
+  };
+
+  const openGeneratedImageModal = (query: string) => {
+    setSelectionPopup(null);
+    //trigger image generation/put API call here 
+    //query is the text that has been highlighted to create the image
   };
 
   const openSearchModal = (query: string) => {
@@ -760,6 +798,7 @@ export default function BookDetailScreen() {
         userId={user?.uid ?? ''}
         bookId={String(id)}
         currentPage={currentPage}
+        
         onSaveSuccess={() => {
           // Refetch notes after save
           if (user && id) {
@@ -793,6 +832,9 @@ export default function BookDetailScreen() {
                   <Pressable style={styles.popupButton} onPress={() => openSearchModal(selectionPopup.text)}>
                     <Text style={styles.popupButtonText}>Search</Text>
                   </Pressable>
+                  {/* <Pressable style={styles.popupButton} onPress={() => openGeneratedImageModal(selectionPopup.text)}>
+                    <Text style={styles.popupButtonText}>Generate Image</Text>
+                  </Pressable> */}
                 </View>
               </>
             ) : null}
@@ -824,6 +866,8 @@ export default function BookDetailScreen() {
                 <Pressable style={styles.popupCancelButton} onPress={() => setSearchModal(null)}>
                   <Text style={styles.popupCancelText}>Close</Text>
                 </Pressable>
+                
+
               </>
             ) : null}
           </Pressable>
@@ -852,6 +896,7 @@ export default function BookDetailScreen() {
         <Pressable style={styles.actionButton} onPress={() => setShowAnnotations((prev) => !prev)}>
           <Text style={styles.actionText}>Annotate</Text>
         </Pressable>
+          
         <Pressable
           style={[
             styles.actionButton,
