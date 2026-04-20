@@ -57,11 +57,6 @@ export default function BookDetailScreen() {
   const [imageStatusByPage, setImageStatusByPage] = useState<
     Record<number, 'loading' | 'generated' | 'placeholder'>
   >({});
-  const [imagesLoading, setImagesLoading] = useState(false);
-
-  const imageSessionIdRef = useRef(0);
-  const pendingFetchByPageRef = useRef<Record<number, Promise<void>>>({});
-  const completedPagesRef = useRef<Set<number>>(new Set());
 
   // Swipe and animation refs
   const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
@@ -114,65 +109,6 @@ export default function BookDetailScreen() {
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
-  const requestPageImage = useCallback((pageIndex: number) => {
-    const session = imageSessionIdRef.current;
-
-    if (completedPagesRef.current.has(pageIndex)) {
-      return Promise.resolve();
-    }
-
-    const existing = pendingFetchByPageRef.current[pageIndex];
-    if (existing) {
-      return existing;
-    }
-
-    const pageText = pages[pageIndex];
-    if (!pageText?.trim()) {
-      completedPagesRef.current.add(pageIndex);
-      setImageStatusByPage((prev) => ({ ...prev, [pageIndex]: 'placeholder' }));
-      return Promise.resolve();
-    }
-
-    setImageStatusByPage((prev) => {
-      if (prev[pageIndex] === 'generated' || prev[pageIndex] === 'placeholder') {
-        return prev;
-      }
-      return { ...prev, [pageIndex]: 'loading' };
-    });
-
-    const p = generateImageForPageText(pageText)
-      .then((uri) => {
-        if (session !== imageSessionIdRef.current) {
-          return;
-        }
-        completedPagesRef.current.add(pageIndex);
-        if (uri) {
-          setGeneratedImageUrisByPage((prev) => ({ ...prev, [pageIndex]: uri }));
-          setImageStatusByPage((prev) => ({ ...prev, [pageIndex]: 'generated' }));
-        } else {
-          setImageStatusByPage((prev) => ({ ...prev, [pageIndex]: 'placeholder' }));
-        }
-      })
-      .catch(() => {
-        if (session !== imageSessionIdRef.current) {
-          return;
-        }
-        completedPagesRef.current.add(pageIndex);
-        setImageStatusByPage((prev) => ({ ...prev, [pageIndex]: 'placeholder' }));
-      })
-      .finally(() => {
-        if (
-          session === imageSessionIdRef.current &&
-          pendingFetchByPageRef.current[pageIndex] === p
-        ) {
-          delete pendingFetchByPageRef.current[pageIndex];
-        }
-      });
-
-    pendingFetchByPageRef.current[pageIndex] = p;
-    return p;
-  }, [pages]);
-
   useEffect(() => {
     const path = typeof pdfPath === 'string' ? pdfPath : '';
     if (!path) {
@@ -206,12 +142,8 @@ export default function BookDetailScreen() {
         setCurrentPage(0);
         setAnnotationsByPage({});
         setRangeHighlightsByPage({});
-        imageSessionIdRef.current += 1;
-        pendingFetchByPageRef.current = {};
-        completedPagesRef.current.clear();
         setGeneratedImageUrisByPage({});
         setImageStatusByPage({});
-        setImagesLoading(false);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load PDF text.');
       } finally {
@@ -280,42 +212,38 @@ export default function BookDetailScreen() {
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
 
-  // From main: prefetch a sample of pages after a short delay (reduces burst load on the API).
   useEffect(() => {
-    if (pages.length === 0) {
+    const pageText = pages[currentPage];
+    if (!pageText) {
       return;
     }
-    let cancelled = false;
-    setImagesLoading(true);
 
-    const interval = Math.max(1, Math.floor(pages.length / 10));
-    const imagePageIndices: number[] = [];
-    for (let i = 0; i < pages.length; i += interval) {
-      imagePageIndices.push(i);
+    const status = imageStatusByPage[currentPage];
+    if (status === 'generated' || status === 'placeholder' || status === 'loading') {
+      return;
     }
 
-    const timeoutId = setTimeout(() => {
-      void Promise.all(imagePageIndices.map((idx) => requestPageImage(idx))).finally(() => {
-        if (!cancelled) {
-          setImagesLoading(false);
-        }
-      });
-    }, 5000);
+    let isCancelled = false;
+    setImageStatusByPage((prev) => ({ ...prev, [currentPage]: 'loading' }));
+
+    generateImageForPageText(pageText).then((imageUri) => {
+      if (isCancelled) {
+        return;
+      }
+
+      if (imageUri) {
+        setGeneratedImageUrisByPage((prev) => ({ ...prev, [currentPage]: imageUri }));
+        setImageStatusByPage((prev) => ({ ...prev, [currentPage]: 'generated' }));
+        return;
+      }
+
+      setImageStatusByPage((prev) => ({ ...prev, [currentPage]: 'placeholder' }));
+    });
 
     return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-      setImagesLoading(false);
+      isCancelled = true;
     };
-  }, [pages, requestPageImage]);
-
-  // Ensures the current page always requests an image (covers pages not in the prefetch sample).
-  useEffect(() => {
-    if (pages.length === 0) {
-      return;
-    }
-    void requestPageImage(currentPage);
-  }, [currentPage, pages, requestPageImage]);
+  }, [currentPage, imageStatusByPage, pages]);
 
   // Animation effect for menu slide-in/out
   useEffect(() => {
@@ -729,11 +657,6 @@ export default function BookDetailScreen() {
                     ? 'Illustration (generating, placeholder shown if unavailable)'
                     : 'Illustration (placeholder fallback)'}
               </Text>
-              {imagesLoading ? (
-                <Text style={styles.imagesPrefetchHint}>
-                  Prefetching illustrations for other pages in the background…
-                </Text>
-              ) : null}
               {renderText(pages[currentPage])}
             </View>
             <Text style={styles.pageIndicator}>
@@ -1079,12 +1002,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#888888',
     marginBottom: 16,
-  },
-  imagesPrefetchHint: {
-    fontSize: 11,
-    color: '#666666',
-    marginBottom: 12,
-    textAlign: 'center',
   },
   annotationsOverlay: {
     position: 'absolute',
