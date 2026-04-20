@@ -25,18 +25,6 @@ import {
 import { getBook, updateBook } from '../../services/bookService';
 import { auth } from '../../services/firebaseConfig';
 import { generateImageForPageText } from '../../services/imageGenerationService';
-import {
-  fetchAvailableVoices,
-  generateTTS,
-  getCachedAudio,
-  saveTTSMetadata,
-  TTS_ENGINES,
-  TTS_VOICES,
-  uploadAudio,
-  type TTSEngine,
-  type TTSVoice,
-  type VoiceMap,
-} from '../../services/ttsService';
 
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -71,30 +59,9 @@ export default function BookDetailScreen() {
   >({});
   const [imagesLoading, setImagesLoading] = useState(false);
 
-  const [chapterPages, setChapterPages] = useState<number[]>([]);
-
-  const [selectedVoice, setSelectedVoice] = useState<TTSVoice>('Normal');
-  const [selectedEngine, setSelectedEngine] = useState<TTSEngine>('Piper');
-  const [selectedVoiceId, setSelectedVoiceId] = useState('');
-  const [piperVoices, setPiperVoices] = useState<VoiceMap>({});
-  const [azureVoices, setAzureVoices] = useState<VoiceMap>({});
-  const [showVoicePicker, setShowVoicePicker] = useState(false);
-  const [ttsLoading, setTtsLoading] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [showPlayer, setShowPlayer] = useState(false);
-  const [audioProgress, setAudioProgress] = useState(0);
-  const [audioDuration, setAudioDuration] = useState(0);
-  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
-
   const imageSessionIdRef = useRef(0);
   const pendingFetchByPageRef = useRef<Record<number, Promise<void>>>({});
   const completedPagesRef = useRef<Set<number>>(new Set());
-
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioSettingsRef = useRef<{ voice: TTSVoice; engine: TTSEngine; voiceId: string } | null>(null);
-  const piperDefaultRef = useRef('');
-  const azureDefaultRef = useRef('');
 
   // Swipe and animation refs
   const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
@@ -146,206 +113,6 @@ export default function BookDetailScreen() {
 
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
-
-  const ttsLocked = isPlaying || ttsLoading;
-  const settingsChanged =
-    audioSettingsRef.current !== null &&
-    (audioSettingsRef.current.voice !== selectedVoice ||
-      audioSettingsRef.current.engine !== selectedEngine ||
-      audioSettingsRef.current.voiceId !== selectedVoiceId);
-  const currentVoiceMap = selectedEngine === 'Azure' ? azureVoices : piperVoices;
-  const selectedVoiceLabel =
-    selectedVoiceId && currentVoiceMap[selectedVoiceId]
-      ? currentVoiceMap[selectedVoiceId]
-      : Object.values(currentVoiceMap)[0] || 'Default';
-
-  useEffect(() => {
-    fetchAvailableVoices().then(({ piper, azure }) => {
-      setPiperVoices(piper);
-      setAzureVoices(azure);
-      const firstPiper = Object.keys(piper)[0] || '';
-      const firstAzure = Object.keys(azure)[0] || '';
-      setSelectedVoiceId(firstPiper);
-      piperDefaultRef.current = firstPiper;
-      azureDefaultRef.current = firstAzure;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (selectedEngine === 'Azure') {
-      setSelectedVoiceId(azureDefaultRef.current);
-    } else {
-      setSelectedVoiceId(piperDefaultRef.current);
-    }
-  }, [selectedEngine]);
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const startProgressTracking = (audio: HTMLAudioElement) => {
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    progressIntervalRef.current = setInterval(() => {
-      if (audio && !Number.isNaN(audio.duration)) {
-        setAudioCurrentTime(audio.currentTime);
-        setAudioDuration(audio.duration);
-        setAudioProgress(audio.duration > 0 ? audio.currentTime / audio.duration : 0);
-      }
-    }, 250);
-  };
-
-  const stopProgressTracking = () => {
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = null;
-    }
-  };
-
-  const cleanupAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    stopProgressTracking();
-    setIsPlaying(false);
-    setAudioProgress(0);
-    setAudioCurrentTime(0);
-    setAudioDuration(0);
-    audioSettingsRef.current = null;
-  };
-
-  useEffect(() => {
-    return () => {
-      cleanupAudio();
-    };
-  }, []);
-
-  useEffect(() => {
-    cleanupAudio();
-    setShowPlayer(false);
-  }, [currentPage]);
-
-  const handlePlayPause = () => {
-    if (ttsLoading) return;
-    if (settingsChanged && !isPlaying) {
-      void generateAndPlay();
-      return;
-    }
-    if (!audioRef.current) return;
-    if (isPlaying) {
-      audioRef.current.pause();
-      stopProgressTracking();
-      setIsPlaying(false);
-    } else {
-      void audioRef.current.play();
-      startProgressTracking(audioRef.current);
-      setIsPlaying(true);
-    }
-  };
-
-  const handleSeek = (value: number) => {
-    if (audioRef.current && audioDuration > 0) {
-      audioRef.current.currentTime = value * audioDuration;
-      setAudioCurrentTime(audioRef.current.currentTime);
-      setAudioProgress(value);
-    }
-  };
-
-  const handleStopTTS = () => {
-    cleanupAudio();
-    setShowPlayer(false);
-  };
-
-  const generateAndPlay = async () => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') {
-      setError('Listen is only available on web.');
-      setTtsLoading(false);
-      setShowPlayer(false);
-      return;
-    }
-
-    const pageText = pages[currentPage];
-    if (!pageText) return;
-
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    stopProgressTracking();
-    setAudioProgress(0);
-    setAudioCurrentTime(0);
-    setAudioDuration(0);
-
-    const userId = auth.currentUser?.uid;
-    const bookId = id ?? 'unknown';
-    const curVoice = selectedVoice;
-    const curEngine = selectedEngine;
-    const curVoiceId = selectedVoiceId;
-
-    setTtsLoading(true);
-    setShowPlayer(true);
-    try {
-      let audioUrl: string | null = null;
-      if (userId) {
-        try {
-          audioUrl = await getCachedAudio(userId, bookId, currentPage, curVoice, curEngine, curVoiceId);
-        } catch (e) {
-          console.warn('[TTS] Cache lookup failed:', e);
-        }
-      }
-
-      let audioBlob: Blob | null = null;
-      if (!audioUrl) {
-        audioBlob = await generateTTS(pageText, curVoice, curEngine, curVoiceId);
-        audioUrl = URL.createObjectURL(audioBlob);
-      }
-
-      const audio = new window.Audio(audioUrl);
-      audioRef.current = audio;
-      audioSettingsRef.current = { voice: curVoice, engine: curEngine, voiceId: curVoiceId };
-      audio.onended = () => {
-        setIsPlaying(false);
-        stopProgressTracking();
-        setAudioProgress(1);
-      };
-      audio.onerror = () => {
-        setIsPlaying(false);
-        stopProgressTracking();
-      };
-      audio.onloadedmetadata = () => {
-        setAudioDuration(audio.duration);
-      };
-      await audio.play();
-      startProgressTracking(audio);
-      setIsPlaying(true);
-      setTtsLoading(false);
-
-      if (audioBlob && userId) {
-        void uploadAudio(userId, bookId, currentPage, curVoice, audioBlob, curEngine, curVoiceId)
-          .then((url) => saveTTSMetadata(userId, bookId, currentPage, curVoice, url, curEngine, curVoiceId))
-          .catch((e) => console.error('[TTS] Cache upload failed:', e));
-      }
-    } catch (err) {
-      console.error('TTS error:', err);
-      setError(err instanceof Error ? err.message : 'TTS playback failed');
-      setTtsLoading(false);
-      setShowPlayer(false);
-    }
-  };
-
-  const handleListen = async () => {
-    if (Platform.OS !== 'web') {
-      setError('Listen is only available on web.');
-      return;
-    }
-    if (showPlayer) {
-      handleStopTTS();
-      return;
-    }
-    await generateAndPlay();
-  };
 
   const requestPageImage = useCallback((pageIndex: number) => {
     const session = imageSessionIdRef.current;
@@ -434,27 +201,7 @@ export default function BookDetailScreen() {
           .split(/--\s*\d+\s+of\s+\d+\s*--/g)
           .map((part: string) => part.trim())
           .filter(Boolean);
-        let nextPages: string[];
-        if (parts.length > 1) {
-          nextPages = parts;
-        } else if (rawText.length > 3000) {
-          const PAGE_SIZE = 2000;
-          const paragraphs = rawText.split(/\n\s*\n/);
-          const builtPages: string[] = [];
-          let current = '';
-          for (const para of paragraphs) {
-            if (current.length + para.length + 2 > PAGE_SIZE && current) {
-              builtPages.push(current.trim());
-              current = para;
-            } else {
-              current = current ? `${current}\n\n${para}` : para;
-            }
-          }
-          if (current.trim()) builtPages.push(current.trim());
-          nextPages = builtPages.length ? builtPages : rawText ? [rawText] : [];
-        } else {
-          nextPages = rawText ? [rawText] : [];
-        }
+        const nextPages = parts.length ? parts : rawText ? [rawText] : [];
         setPages(nextPages);
         setCurrentPage(0);
         setAnnotationsByPage({});
@@ -624,29 +371,59 @@ export default function BookDetailScreen() {
     });
   }, []);
 
+  // Animation effect for menu slide-in/out
   useEffect(() => {
-    setChapterPages(getChapterPages(pages));
-  }, [pages]);
+    Animated.timing(menuAnimRef, {
+      toValue: showAnnotations ? 1 : 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [showAnnotations, menuAnimRef]);
 
-  const prevPageRef = useRef(0);
-  const hasInitializedChapterWatcherRef = useRef(false);
-
+  // Fetch notes from service
   useEffect(() => {
-    if (!hasInitializedChapterWatcherRef.current) {
-      hasInitializedChapterWatcherRef.current = true;
-      prevPageRef.current = currentPage;
+    if (initializing) {
+      return;
+    }
+    if (!user || !id) {
+      setFetchedNotes([]);
       return;
     }
 
-    const movedToDifferentPage = currentPage !== prevPageRef.current;
-    const enteredChapterStart = chapterPages.includes(currentPage);
+    let mounted = true;
+    const fetchNotes = async () => {
+      setNotesLoading(true);
+      const result = await getNotesForBook(user.uid, String(id), currentPage);
+      if (!mounted) return;
+      if (result.success && result.notes) {
+        setFetchedNotes(result.notes);
+      } else {
+        console.error('Failed to fetch notes:', result.error);
+        setFetchedNotes([]);
+      }
+      setNotesLoading(false);
+    };
+    fetchNotes();
 
-    if (movedToDifferentPage && enteredChapterStart) {
-      setShowChapterNote(true);
-    }
+    return () => {
+      mounted = false;
+    };
+  }, [user, initializing, id, currentPage]);
 
-    prevPageRef.current = currentPage;
-  }, [currentPage, chapterPages]);
+  // Initialize PanResponder for left-swipe detection
+  useEffect(() => {
+    panResponderRef.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
+        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
+      },
+      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
+        if (gestureState.dx < -50) {
+          setShowAnnotations(true);
+        }
+      },
+    });
+  }, []);
 
   const handleAddAnnotation = () => {
     const trimmed = newAnnotation.trim();
@@ -931,9 +708,6 @@ export default function BookDetailScreen() {
             Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
           </Text>
         ) : null}
-        {!loading && imagesLoading ? (
-          <Text style={styles.subtitle}>Generating images…</Text>
-        ) : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {!loading && !error && pages.length ? (
           <View style={styles.pageList}>
@@ -1217,13 +991,6 @@ export default function BookDetailScreen() {
           <Text style={styles.actionText}>Annotate</Text>
         </Pressable>
         <Pressable
-          style={[styles.actionButton, ttsLoading && styles.actionButtonDisabled]}
-          onPress={handleListen}
-          disabled={ttsLoading || !pages.length}
-        >
-          <Text style={styles.actionText}>{showPlayer ? 'Close' : 'Listen'}</Text>
-        </Pressable>
-        <Pressable
           style={[
             styles.actionButton,
             currentPage === pages.length - 1 && styles.actionButtonDisabled,
@@ -1234,177 +1001,6 @@ export default function BookDetailScreen() {
           <Text style={styles.actionText}>Next</Text>
         </Pressable>
       </View>
-
-      {showPlayer && Platform.OS === 'web' ? (
-        <View style={styles.playerBar}>
-          <View style={styles.playerRow}>
-            <Pressable
-              style={[styles.playerPlayBtn, ttsLoading && styles.playerPlayBtnDisabled]}
-              onPress={handlePlayPause}
-              disabled={ttsLoading || !audioRef.current}
-            >
-              <Text style={styles.playerPlayBtnText}>
-                {ttsLoading ? '...' : isPlaying ? '\u275A\u275A' : settingsChanged ? '\u21BB' : '\u25B6'}
-              </Text>
-            </Pressable>
-            <View style={styles.playerProgressWrap}>
-              <Slider
-                style={styles.playerSlider}
-                minimumValue={0}
-                maximumValue={1}
-                value={audioProgress}
-                onSlidingComplete={handleSeek}
-                minimumTrackTintColor="#FFFFFF"
-                maximumTrackTintColor="#333333"
-                thumbTintColor="#FFFFFF"
-                disabled={ttsLoading || !audioRef.current}
-              />
-              <View style={styles.playerTimeRow}>
-                <Text style={styles.playerTimeText}>{formatTime(audioCurrentTime)}</Text>
-                <Text style={styles.playerTimeText}>{formatTime(audioDuration)}</Text>
-              </View>
-            </View>
-            <Pressable style={styles.playerCloseBtn} onPress={handleStopTTS}>
-              <Text style={styles.playerCloseBtnText}>{'\u2715'}</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.playerChipsRow}>
-            <Pressable
-              style={[styles.playerChip, ttsLocked && styles.playerChipDisabled]}
-              onPress={() => {
-                if (!ttsLocked) setShowVoicePicker(true);
-              }}
-              disabled={ttsLocked}
-            >
-              <Text style={[styles.playerChipText, ttsLocked && styles.playerChipTextDisabled]}>
-                {selectedVoiceLabel}
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[styles.playerChip, ttsLocked && styles.playerChipDisabled]}
-              onPress={() => {
-                if (!ttsLocked) setShowVoicePicker(true);
-              }}
-              disabled={ttsLocked}
-            >
-              <Text style={[styles.playerChipText, ttsLocked && styles.playerChipTextDisabled]}>
-                {selectedVoice}
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.playerChip,
-                selectedEngine === 'Azure' && !ttsLocked && styles.playerChipPremium,
-                ttsLocked && styles.playerChipDisabled,
-              ]}
-              onPress={() => {
-                if (!ttsLocked) setShowVoicePicker(true);
-              }}
-              disabled={ttsLocked}
-            >
-              <Text
-                style={[
-                  styles.playerChipText,
-                  selectedEngine === 'Azure' && !ttsLocked && styles.playerChipTextPremium,
-                  ttsLocked && styles.playerChipTextDisabled,
-                ]}
-              >
-                {selectedEngine === 'Azure' ? 'Premium' : 'Standard'}
-              </Text>
-            </Pressable>
-            {ttsLocked && isPlaying ? (
-              <Text style={styles.playerLockHint}>Pause to change settings</Text>
-            ) : null}
-            {settingsChanged && !isPlaying && !ttsLoading ? (
-              <Text style={styles.playerLockHint}>Press play to regenerate</Text>
-            ) : null}
-          </View>
-        </View>
-      ) : null}
-
-      <Modal
-        visible={showVoicePicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowVoicePicker(false)}
-      >
-        <Pressable style={styles.modalOverlay} onPress={() => setShowVoicePicker(false)}>
-          <View style={styles.voicePickerPanel} onStartShouldSetResponder={() => true}>
-            <Text style={styles.voicePickerTitle}>TTS Settings</Text>
-
-            <View style={styles.voicePickerSection}>
-              <Text style={styles.voicePickerSectionTitle}>Engine</Text>
-              {TTS_ENGINES.map((engine) => (
-                <Pressable
-                  key={engine}
-                  style={[styles.voiceOption, engine === selectedEngine && styles.voiceOptionSelected]}
-                  onPress={() => setSelectedEngine(engine)}
-                >
-                  <Text
-                    style={[
-                      styles.voiceOptionText,
-                      engine === selectedEngine && styles.voiceOptionTextSelected,
-                    ]}
-                  >
-                    {engine === 'Piper' ? 'Standard (Piper)' : 'Premium (Azure)'}
-                    {engine === 'Azure' ? <Text style={styles.premiumBadge}> PREMIUM</Text> : null}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View style={styles.voicePickerSection}>
-              <Text style={styles.voicePickerSectionTitle}>Voice</Text>
-              <ScrollView style={styles.voiceListScroll} nestedScrollEnabled>
-                {Object.entries(currentVoiceMap).map(([vId, label]) => (
-                  <Pressable
-                    key={vId}
-                    style={[styles.voiceOption, vId === selectedVoiceId && styles.voiceOptionSelected]}
-                    onPress={() => setSelectedVoiceId(vId)}
-                  >
-                    <Text
-                      style={[
-                        styles.voiceOptionText,
-                        vId === selectedVoiceId && styles.voiceOptionTextSelected,
-                      ]}
-                    >
-                      {label}
-                    </Text>
-                  </Pressable>
-                ))}
-                {Object.keys(currentVoiceMap).length === 0 ? (
-                  <Text style={styles.voiceOptionText}>No voices available</Text>
-                ) : null}
-              </ScrollView>
-            </View>
-
-            <View style={styles.voicePickerSection}>
-              <Text style={styles.voicePickerSectionTitle}>Speed</Text>
-              {TTS_VOICES.map((v) => (
-                <Pressable
-                  key={v}
-                  style={[styles.voiceOption, v === selectedVoice && styles.voiceOptionSelected]}
-                  onPress={() => setSelectedVoice(v)}
-                >
-                  <Text
-                    style={[
-                      styles.voiceOptionText,
-                      v === selectedVoice && styles.voiceOptionTextSelected,
-                    ]}
-                  >
-                    {v}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <Pressable style={styles.voicePickerDone} onPress={() => setShowVoicePicker(false)}>
-              <Text style={styles.voicePickerDoneText}>Done</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -1423,7 +1019,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingTop: 60,
     paddingHorizontal: 24,
-    paddingBottom: 180,
+    paddingBottom: 120,
     backgroundColor: '#000000',
     alignItems: 'center',
   },
@@ -1722,10 +1318,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     flexDirection: 'row',
     justifyContent: 'center',
-    flexWrap: 'wrap',
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    gap: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
     backgroundColor: '#000000',
     borderTopWidth: 1,
     borderTopColor: '#222222',
@@ -1855,174 +1450,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 6,
     lineHeight: 16,
-  },
-  playerBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 56,
-    backgroundColor: '#0A0A0A',
-    borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  playerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  playerPlayBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  playerPlayBtnDisabled: {
-    backgroundColor: '#333333',
-  },
-  playerPlayBtnText: {
-    color: '#000000',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  playerProgressWrap: {
-    flex: 1,
-  },
-  playerSlider: {
-    width: '100%',
-    height: 24,
-  },
-  playerTimeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: -4,
-    paddingHorizontal: 2,
-  },
-  playerTimeText: {
-    color: '#666666',
-    fontSize: 11,
-  },
-  playerCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#1A1A1A',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  playerCloseBtnText: {
-    color: '#888888',
-    fontSize: 14,
-  },
-  playerChipsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 6,
-  },
-  playerChip: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: '#1A1A1A',
-    borderWidth: 1,
-    borderColor: '#333333',
-  },
-  playerChipDisabled: {
-    opacity: 0.35,
-  },
-  playerChipPremium: {
-    borderColor: '#FFD700',
-  },
-  playerChipText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  playerChipTextDisabled: {
-    color: '#666666',
-  },
-  playerChipTextPremium: {
-    color: '#FFD700',
-  },
-  playerLockHint: {
-    color: '#555555',
-    fontSize: 11,
-    marginLeft: 4,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  voicePickerPanel: {
-    width: 280,
-    maxHeight: '90%',
-    backgroundColor: '#111111',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#222222',
-  },
-  voicePickerTitle: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  voicePickerSection: {
-    marginBottom: 12,
-  },
-  voicePickerSectionTitle: {
-    color: '#888888',
-    fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 6,
-    textTransform: 'uppercase',
-  },
-  voiceListScroll: {
-    maxHeight: 160,
-  },
-  voicePickerDone: {
-    marginTop: 4,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-  },
-  voicePickerDoneText: {
-    color: '#111111',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  voiceOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    marginBottom: 4,
-  },
-  voiceOptionSelected: {
-    backgroundColor: '#FFFFFF',
-  },
-  voiceOptionText: {
-    color: '#CCCCCC',
-    fontSize: 14,
-  },
-  voiceOptionTextSelected: {
-    color: '#111111',
-    fontWeight: '600',
-  },
-  premiumBadge: {
-    color: '#FFD700',
-    fontSize: 11,
-    fontWeight: '600',
-    marginLeft: 6,
   },
 });
