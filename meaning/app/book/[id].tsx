@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Dimensions,
+  Image,
   Linking,
   Modal,
   PanResponder,
@@ -49,7 +50,9 @@ export default function BookDetailScreen() {
   }>();
   const displayTitle = title ?? `Book ${id ?? ''}`;
   const [pages, setPages] = useState<string[]>([]);
-  const [currentPage, setCurrentPage] = useState(0);
+  const [currentPage, setCurrentPage] = useState(0)
+  const [newestPage, setNewestPage] = useState<number>(-1);
+  const [chapterPages, setChapterPages] = useState<number[]>([]);;
   const [showAnnotations, setShowAnnotations] = useState(false);
   const [annotationsByPage, setAnnotationsByPage] = useState<Record<number, string[]>>({});
   const [newAnnotation, setNewAnnotation] = useState('');
@@ -62,6 +65,11 @@ export default function BookDetailScreen() {
   const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
   const [showChapterNote, setShowChapterNote] = useState(false);
+  
+
+  // AI images: page -> url | 'NO_API_KEY' | 'ERROR'
+  const [imagesByPage, setImagesByPage] = useState<Record<number, string>>({});
+  const [imagesLoading, setImagesLoading] = useState(false);
 
   // Swipe and animation refs
   const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
@@ -477,6 +485,52 @@ export default function BookDetailScreen() {
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
 
+  // Fetch all AI images when pages first load
+  useEffect(() => {
+    if (pages.length === 0) return;
+    setImagesLoading(true);
+    setImagesByPage({});
+
+    const interval = Math.max(1, Math.floor(pages.length / 10));
+    const imagePageIndices: number[] = [];
+    for (let i = 0; i < pages.length; i += interval) {
+      imagePageIndices.push(i);
+    }
+
+    const fetchAll = async () => {
+      // 5 second wait to allow images to funnel in
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      await Promise.all(
+        imagePageIndices.map(async (pageIndex) => {
+          const pageText = pages[pageIndex] ?? '';
+          const prompt = `Illustrate this scene from a book: ${pageText.slice(0, 500)}`;
+          try {
+            const res = await fetch('http://localhost:5050/generate-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt }),
+            });
+            const data = await res.json();
+            if (data.error === 'NO_API_KEY') {
+              setImagesByPage((prev) => ({ ...prev, [pageIndex]: 'NO_API_KEY' }));
+            } else if (data.url) {
+              setImagesByPage((prev) => ({ ...prev, [pageIndex]: data.url }));
+            } else {
+              setImagesByPage((prev) => ({ ...prev, [pageIndex]: 'ERROR' }));
+            }
+          } catch {
+            setImagesByPage((prev) => ({ ...prev, [pageIndex]: 'ERROR' }));
+          }
+        })
+      );
+
+      setImagesLoading(false);
+    };
+
+    fetchAll();
+  }, [pages]);
+
   // Animation effect for menu slide-in/out
   useEffect(() => {
     Animated.timing(menuAnimRef, {
@@ -584,6 +638,33 @@ export default function BookDetailScreen() {
       },
     });
   }, []);
+
+  //find current page and chapter
+  useEffect(() => {
+    setChapterPages(getChapterPages(pages));
+  }, [pages]);
+  
+  const prevPageRef = useRef(0);
+  const hasInitializedChapterWatcherRef = useRef(false);
+
+  useEffect(() => {
+  if (!hasInitializedChapterWatcherRef.current) {
+    hasInitializedChapterWatcherRef.current = true;
+    prevPageRef.current = currentPage;
+    return;
+  }
+
+  const movedToDifferentPage = currentPage !== prevPageRef.current;
+  const enteredChapterStart = chapterPages.includes(currentPage);
+
+  if (movedToDifferentPage && enteredChapterStart) {
+    setShowChapterNote(true);
+  }
+
+  prevPageRef.current = currentPage;
+}, [currentPage, chapterPages]);
+
+
 
   const handleAddAnnotation = () => {
     const trimmed = newAnnotation.trim();
@@ -598,6 +679,8 @@ export default function BookDetailScreen() {
     setIsAddingAnnotation(false);
   };
 
+
+  
   const maxChunkLen = 120;
 
   // Split a single line into segments (sentences; cap length for long runs)
@@ -657,6 +740,12 @@ export default function BookDetailScreen() {
   const handleCopy = async (text: string) => {
     await Clipboard.setStringAsync(text);
     setSelectionPopup(null);
+  };
+
+  const openGeneratedImageModal = (query: string) => {
+    setSelectionPopup(null);
+    //trigger image generation/put API call here 
+    //query is the text that has been highlighted to create the image
   };
 
   const openSearchModal = (query: string) => {
@@ -865,9 +954,29 @@ export default function BookDetailScreen() {
             Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
           </Text>
         ) : null}
+        {!loading && imagesLoading ? (
+          <Text style={styles.subtitle}>Generating images…</Text>
+        ) : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {!loading && !error && pages.length ? (
           <View style={styles.pageList}>
+            {(() => {
+              const img = imagesByPage[currentPage];
+              if (img === 'NO_API_KEY') {
+                return <View style={styles.imagePlaceholder}><Text style={styles.imagePlaceholderText}>API key not configured</Text></View>;
+              }
+              if (img === 'ERROR') {
+                return null;
+              }
+              if (img) {
+                return <Image source={{ uri: img }} style={styles.pageImage} resizeMode="cover" />;
+              }
+              const interval = Math.max(1, Math.floor(pages.length / 10));
+              if (currentPage % interval === 0) {
+                return <View style={styles.imagePlaceholder}><Text style={styles.imagePlaceholderText}>Generating image…</Text></View>;
+              }
+              return null;
+            })()}
             <View style={styles.pageContent}>
               {renderText(pages[currentPage])}
             </View>
@@ -1033,6 +1142,7 @@ export default function BookDetailScreen() {
         userId={user?.uid ?? ''}
         bookId={String(id)}
         currentPage={currentPage}
+        
         onSaveSuccess={() => {
           // Refetch notes after save
           if (user && id) {
@@ -1066,6 +1176,9 @@ export default function BookDetailScreen() {
                   <Pressable style={styles.popupButton} onPress={() => openSearchModal(selectionPopup.text)}>
                     <Text style={styles.popupButtonText}>Search</Text>
                   </Pressable>
+                  {/* <Pressable style={styles.popupButton} onPress={() => openGeneratedImageModal(selectionPopup.text)}>
+                    <Text style={styles.popupButtonText}>Generate Image</Text>
+                  </Pressable> */}
                 </View>
               </>
             ) : null}
@@ -1097,6 +1210,8 @@ export default function BookDetailScreen() {
                 <Pressable style={styles.popupCancelButton} onPress={() => setSearchModal(null)}>
                   <Text style={styles.popupCancelText}>Close</Text>
                 </Pressable>
+                
+
               </>
             ) : null}
           </Pressable>
@@ -1125,6 +1240,7 @@ export default function BookDetailScreen() {
         <Pressable style={styles.actionButton} onPress={() => setShowAnnotations((prev) => !prev)}>
           <Text style={styles.actionText}>Annotate</Text>
         </Pressable>
+          
         <Pressable
           style={[styles.actionButton, ttsLoading && styles.actionButtonDisabled]}
           onPress={handleListen}
@@ -1927,5 +2043,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 6,
     lineHeight: 16,
+  },
+  pageImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  imagePlaceholder: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 16,
+    backgroundColor: '#1A1A1A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imagePlaceholderText: {
+    color: '#888888',
+    fontSize: 13,
   },
 });
