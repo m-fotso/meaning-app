@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Dimensions,
+  Image,
   Linking,
   Modal,
   PanResponder,
@@ -24,6 +25,18 @@ import {
 } from 'react-native';
 import { getBook, updateBook } from '../../services/bookService';
 import { auth } from '../../services/firebaseConfig';
+import {
+  generateTTS,
+  uploadAudio,
+  saveTTSMetadata,
+  getCachedAudio,
+  fetchAvailableVoices,
+  TTS_VOICES,
+  TTS_ENGINES,
+  type TTSVoice,
+  type TTSEngine,
+  type VoiceMap,
+} from '../../services/ttsService';
 import { generateImageForPageText } from '../../services/imageGenerationService';
 
 
@@ -40,7 +53,9 @@ export default function BookDetailScreen() {
   }>();
   const displayTitle = title ?? `Book ${id ?? ''}`;
   const [pages, setPages] = useState<string[]>([]);
-  const [currentPage, setCurrentPage] = useState(0);
+  const [currentPage, setCurrentPage] = useState(0)
+  const [newestPage, setNewestPage] = useState<number>(-1);
+  const [chapterPages, setChapterPages] = useState<number[]>([]);;
   const [showAnnotations, setShowAnnotations] = useState(false);
   const [annotationsByPage, setAnnotationsByPage] = useState<Record<number, string[]>>({});
   const [newAnnotation, setNewAnnotation] = useState('');
@@ -53,6 +68,11 @@ export default function BookDetailScreen() {
   const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
   const [showChapterNote, setShowChapterNote] = useState(false);
+  
+
+  // AI images: page -> url | 'NO_API_KEY' | 'ERROR'
+  const [imagesByPage, setImagesByPage] = useState<Record<number, string>>({});
+  const [imagesLoading, setImagesLoading] = useState(false);
   const [generatedImageUrisByPage, setGeneratedImageUrisByPage] = useState<Record<number, string>>({});
   const [imageStatusByPage, setImageStatusByPage] = useState<
     Record<number, 'loading' | 'generated' | 'placeholder'>
@@ -109,6 +129,247 @@ export default function BookDetailScreen() {
   // On web: keep last non-empty selection so the Selection button still has it after click clears it
   const lastSelectionRef = useRef('');
 
+  // TTS state
+  const [selectedVoice, setSelectedVoice] = useState<TTSVoice>('Normal');
+  const [selectedEngine, setSelectedEngine] = useState<TTSEngine>('Piper');
+  const [selectedVoiceId, setSelectedVoiceId] = useState('');
+  const [piperVoices, setPiperVoices] = useState<VoiceMap>({});
+  const [azureVoices, setAzureVoices] = useState<VoiceMap>({});
+  const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [ttsLoading, setTtsLoading] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [showPlayer, setShowPlayer] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Track which settings produced the currently loaded audio
+  const audioSettingsRef = useRef<{ voice: TTSVoice; engine: TTSEngine; voiceId: string } | null>(null);
+
+  // Whether TTS controls (speed, engine, voice) should be locked — only while actively playing or loading
+  const ttsLocked = isPlaying || ttsLoading;
+
+  // Whether the user changed settings since the current audio was generated
+  const settingsChanged = audioSettingsRef.current !== null && (
+    audioSettingsRef.current.voice !== selectedVoice ||
+    audioSettingsRef.current.engine !== selectedEngine ||
+    audioSettingsRef.current.voiceId !== selectedVoiceId
+  );
+
+  // Current voice map based on selected engine
+  const currentVoiceMap = selectedEngine === 'Azure' ? azureVoices : piperVoices;
+  // Display name for selected voice
+  const selectedVoiceLabel = selectedVoiceId && currentVoiceMap[selectedVoiceId]
+    ? currentVoiceMap[selectedVoiceId]
+    : Object.values(currentVoiceMap)[0] || 'Default';
+
+  // Fetch available voices from TTS server on mount
+  useEffect(() => {
+    fetchAvailableVoices().then(({ piper, azure }) => {
+      setPiperVoices(piper);
+      setAzureVoices(azure);
+      // Set default voice IDs
+      const firstPiper = Object.keys(piper)[0] || '';
+      const firstAzure = Object.keys(azure)[0] || '';
+      setSelectedVoiceId(firstPiper);
+      // Store defaults for engine switching
+      piperDefaultRef.current = firstPiper;
+      azureDefaultRef.current = firstAzure;
+    });
+  }, []);
+
+  const piperDefaultRef = useRef('');
+  const azureDefaultRef = useRef('');
+
+  // When engine changes, switch to that engine's default voice
+  useEffect(() => {
+    if (selectedEngine === 'Azure') {
+      setSelectedVoiceId(azureDefaultRef.current);
+    } else {
+      setSelectedVoiceId(piperDefaultRef.current);
+    }
+  }, [selectedEngine]);
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const startProgressTracking = (audio: HTMLAudioElement) => {
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    progressIntervalRef.current = setInterval(() => {
+      if (audio && !Number.isNaN(audio.duration)) {
+        setAudioCurrentTime(audio.currentTime);
+        setAudioDuration(audio.duration);
+        setAudioProgress(audio.duration > 0 ? audio.currentTime / audio.duration : 0);
+      }
+    }, 250);
+  };
+
+  const stopProgressTracking = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+  };
+
+  const cleanupAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    stopProgressTracking();
+    setIsPlaying(false);
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
+    setAudioDuration(0);
+    audioSettingsRef.current = null;
+  };
+
+  useEffect(() => {
+    return () => {
+      cleanupAudio();
+    };
+  }, []);
+
+  useEffect(() => {
+    cleanupAudio();
+    setShowPlayer(false);
+  }, [currentPage]);
+
+  const handlePlayPause = () => {
+    if (ttsLoading) return;
+
+    // If settings changed since current audio was generated, regenerate
+    if (settingsChanged && !isPlaying) {
+      generateAndPlay();
+      return;
+    }
+
+    if (!audioRef.current) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+      stopProgressTracking();
+      setIsPlaying(false);
+    } else {
+      audioRef.current.play();
+      startProgressTracking(audioRef.current);
+      setIsPlaying(true);
+    }
+  };
+
+  const handleSeek = (value: number) => {
+    if (audioRef.current && audioDuration > 0) {
+      audioRef.current.currentTime = value * audioDuration;
+      setAudioCurrentTime(audioRef.current.currentTime);
+      setAudioProgress(value);
+    }
+  };
+
+  const handleStopTTS = () => {
+    cleanupAudio();
+    setShowPlayer(false);
+  };
+
+  const generateAndPlay = async () => {
+    // Use the parser's page-by-page output directly
+    const pageText = pages[currentPage];
+    if (!pageText) return;
+
+    // Stop any existing audio first
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    stopProgressTracking();
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
+    setAudioDuration(0);
+
+    const userId = auth.currentUser?.uid;
+    const bookId = id ?? 'unknown';
+    const curVoice = selectedVoice;
+    const curEngine = selectedEngine;
+    const curVoiceId = selectedVoiceId;
+    console.log('[TTS] userId:', userId, 'bookId:', bookId, 'page:', currentPage, 'voice:', curVoice, 'engine:', curEngine, 'voiceId:', curVoiceId);
+
+    setTtsLoading(true);
+    setShowPlayer(true);
+    try {
+      // Check cache (keyed by engine + speed + voiceId + page)
+      let audioUrl: string | null = null;
+      if (userId) {
+        try {
+          audioUrl = await getCachedAudio(userId, bookId, currentPage, curVoice, curEngine, curVoiceId);
+          if (audioUrl) {
+            console.log('[TTS] Playing from cache');
+          }
+        } catch (e) {
+          console.warn('[TTS] Cache lookup failed:', e);
+        }
+      }
+
+      let audioBlob: Blob | null = null;
+      if (!audioUrl) {
+        console.log(`[TTS] Generating fresh audio with ${curEngine} voice=${curVoiceId}...`);
+        audioBlob = await generateTTS(pageText, curVoice, curEngine, curVoiceId);
+        audioUrl = URL.createObjectURL(audioBlob);
+      }
+
+      // Play immediately — don't wait for upload
+      const audio = new window.Audio(audioUrl);
+      audioRef.current = audio;
+      // Record which settings produced this audio
+      audioSettingsRef.current = { voice: curVoice, engine: curEngine, voiceId: curVoiceId };
+      audio.onended = () => {
+        setIsPlaying(false);
+        stopProgressTracking();
+        setAudioProgress(1);
+      };
+      audio.onerror = () => {
+        setIsPlaying(false);
+        stopProgressTracking();
+      };
+      audio.onloadedmetadata = () => {
+        setAudioDuration(audio.duration);
+      };
+      await audio.play();
+      startProgressTracking(audio);
+      setIsPlaying(true);
+      setTtsLoading(false);
+
+      // Upload to Firebase in background (non-blocking)
+      if (audioBlob && userId) {
+        console.log('[TTS] Uploading to Firebase...');
+        uploadAudio(userId, bookId, currentPage, curVoice, audioBlob, curEngine, curVoiceId)
+          .then((url) => {
+            console.log('[TTS] Uploaded, saving metadata...');
+            return saveTTSMetadata(userId, bookId, currentPage, curVoice, url, curEngine, curVoiceId);
+          })
+          .then(() => console.log('[TTS] Cached successfully'))
+          .catch((e) => console.error('[TTS] Cache upload failed:', e));
+      } else if (!userId) {
+        console.log('[TTS] Not logged in — skipping cache');
+      }
+    } catch (err) {
+      console.error('TTS error:', err);
+      setError(err instanceof Error ? err.message : 'TTS playback failed');
+      setTtsLoading(false);
+      setShowPlayer(false);
+    }
+  };
+
+  const handleListen = async () => {
+    if (showPlayer) {
+      handleStopTTS();
+      return;
+    }
+    generateAndPlay();
+  };
+
   useEffect(() => {
     const path = typeof pdfPath === 'string' ? pdfPath : '';
     if (!path) {
@@ -137,7 +398,28 @@ export default function BookDetailScreen() {
           .split(/--\s*\d+\s+of\s+\d+\s*--/g)
           .map((part: string) => part.trim())
           .filter(Boolean);
-        const nextPages = parts.length ? parts : rawText ? [rawText] : [];
+        // If no page markers found, split long text into ~2000-char pages at paragraph breaks
+        let nextPages: string[];
+        if (parts.length > 1) {
+          nextPages = parts;
+        } else if (rawText.length > 3000) {
+          const PAGE_SIZE = 2000;
+          const paragraphs = rawText.split(/\n\s*\n/);
+          const builtPages: string[] = [];
+          let current = '';
+          for (const para of paragraphs) {
+            if (current.length + para.length + 2 > PAGE_SIZE && current) {
+              builtPages.push(current.trim());
+              current = para;
+            } else {
+              current = current ? `${current}\n\n${para}` : para;
+            }
+          }
+          if (current.trim()) builtPages.push(current.trim());
+          nextPages = builtPages.length ? builtPages : [rawText];
+        } else {
+          nextPages = rawText ? [rawText] : [];
+        }
         setPages(nextPages);
         setCurrentPage(0);
         setAnnotationsByPage({});
@@ -212,6 +494,51 @@ export default function BookDetailScreen() {
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
 
+  // Fetch all AI images when pages first load
+  useEffect(() => {
+    if (pages.length === 0) return;
+    setImagesLoading(true);
+    setImagesByPage({});
+
+    const interval = Math.max(1, Math.floor(pages.length / 10));
+    const imagePageIndices: number[] = [];
+    for (let i = 0; i < pages.length; i += interval) {
+      imagePageIndices.push(i);
+    }
+
+    const fetchAll = async () => {
+      // 5 second wait to allow images to funnel in
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      await Promise.all(
+        imagePageIndices.map(async (pageIndex) => {
+          const pageText = pages[pageIndex] ?? '';
+          const prompt = `Illustrate this scene from a book: ${pageText.slice(0, 500)}`;
+          try {
+            const res = await fetch('http://localhost:5050/generate-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt }),
+            });
+            const data = await res.json();
+            if (data.error === 'NO_API_KEY') {
+              setImagesByPage((prev) => ({ ...prev, [pageIndex]: 'NO_API_KEY' }));
+            } else if (data.url) {
+              setImagesByPage((prev) => ({ ...prev, [pageIndex]: data.url }));
+            } else {
+              setImagesByPage((prev) => ({ ...prev, [pageIndex]: 'ERROR' }));
+            }
+          } catch {
+            setImagesByPage((prev) => ({ ...prev, [pageIndex]: 'ERROR' }));
+          }
+        })
+      );
+
+      setImagesLoading(false);
+    };
+
+    fetchAll();
+  }, [pages]);
   useEffect(() => {
     const pageText = pages[currentPage];
     if (!pageText) {
@@ -353,6 +680,33 @@ export default function BookDetailScreen() {
     });
   }, []);
 
+  //find current page and chapter
+  useEffect(() => {
+    setChapterPages(getChapterPages(pages));
+  }, [pages]);
+  
+  const prevPageRef = useRef(0);
+  const hasInitializedChapterWatcherRef = useRef(false);
+
+  useEffect(() => {
+  if (!hasInitializedChapterWatcherRef.current) {
+    hasInitializedChapterWatcherRef.current = true;
+    prevPageRef.current = currentPage;
+    return;
+  }
+
+  const movedToDifferentPage = currentPage !== prevPageRef.current;
+  const enteredChapterStart = chapterPages.includes(currentPage);
+
+  if (movedToDifferentPage && enteredChapterStart) {
+    setShowChapterNote(true);
+  }
+
+  prevPageRef.current = currentPage;
+}, [currentPage, chapterPages]);
+
+
+
   const handleAddAnnotation = () => {
     const trimmed = newAnnotation.trim();
     if (!trimmed.length) {
@@ -366,6 +720,8 @@ export default function BookDetailScreen() {
     setIsAddingAnnotation(false);
   };
 
+
+  
   const maxChunkLen = 120;
 
   // Split a single line into segments (sentences; cap length for long runs)
@@ -425,6 +781,12 @@ export default function BookDetailScreen() {
   const handleCopy = async (text: string) => {
     await Clipboard.setStringAsync(text);
     setSelectionPopup(null);
+  };
+
+  const openGeneratedImageModal = (query: string) => {
+    setSelectionPopup(null);
+    //trigger image generation/put API call here 
+    //query is the text that has been highlighted to create the image
   };
 
   const openSearchModal = (query: string) => {
@@ -636,9 +998,29 @@ export default function BookDetailScreen() {
             Loading PDF... {(elapsedMs / 1000).toFixed(1)}s
           </Text>
         ) : null}
+        {!loading && imagesLoading ? (
+          <Text style={styles.subtitle}>Generating images…</Text>
+        ) : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {!loading && !error && pages.length ? (
           <View style={styles.pageList}>
+            {(() => {
+              const img = imagesByPage[currentPage];
+              if (img === 'NO_API_KEY') {
+                return <View style={styles.imagePlaceholder}><Text style={styles.imagePlaceholderText}>API key not configured</Text></View>;
+              }
+              if (img === 'ERROR') {
+                return null;
+              }
+              if (img) {
+                return <Image source={{ uri: img }} style={styles.pageImage} resizeMode="cover" />;
+              }
+              const interval = Math.max(1, Math.floor(pages.length / 10));
+              if (currentPage % interval === 0) {
+                return <View style={styles.imagePlaceholder}><Text style={styles.imagePlaceholderText}>Generating image…</Text></View>;
+              }
+              return null;
+            })()}
             <View style={styles.pageContent}>
               <Image
                 source={{ uri: pageImageUri }}
@@ -821,6 +1203,7 @@ export default function BookDetailScreen() {
         userId={user?.uid ?? ''}
         bookId={String(id)}
         currentPage={currentPage}
+        
         onSaveSuccess={() => {
           // Refetch notes after save
           if (user && id) {
@@ -854,6 +1237,9 @@ export default function BookDetailScreen() {
                   <Pressable style={styles.popupButton} onPress={() => openSearchModal(selectionPopup.text)}>
                     <Text style={styles.popupButtonText}>Search</Text>
                   </Pressable>
+                  {/* <Pressable style={styles.popupButton} onPress={() => openGeneratedImageModal(selectionPopup.text)}>
+                    <Text style={styles.popupButtonText}>Generate Image</Text>
+                  </Pressable> */}
                 </View>
               </>
             ) : null}
@@ -885,6 +1271,8 @@ export default function BookDetailScreen() {
                 <Pressable style={styles.popupCancelButton} onPress={() => setSearchModal(null)}>
                   <Text style={styles.popupCancelText}>Close</Text>
                 </Pressable>
+                
+
               </>
             ) : null}
           </Pressable>
@@ -913,6 +1301,16 @@ export default function BookDetailScreen() {
         <Pressable style={styles.actionButton} onPress={() => setShowAnnotations((prev) => !prev)}>
           <Text style={styles.actionText}>Annotate</Text>
         </Pressable>
+          
+        <Pressable
+          style={[styles.actionButton, ttsLoading && styles.actionButtonDisabled]}
+          onPress={handleListen}
+          disabled={ttsLoading || !pages.length}
+        >
+          <Text style={styles.actionText}>
+            {showPlayer ? 'Close' : 'Listen'}
+          </Text>
+        </Pressable>
         <Pressable
           style={[
             styles.actionButton,
@@ -924,6 +1322,189 @@ export default function BookDetailScreen() {
           <Text style={styles.actionText}>Next</Text>
         </Pressable>
       </View>
+
+      {/* TTS Player Bar */}
+      {showPlayer && (
+        <View style={styles.playerBar}>
+          {/* Row 1: playback controls */}
+          <View style={styles.playerRow}>
+            <Pressable
+              style={[styles.playerPlayBtn, ttsLoading && styles.playerPlayBtnDisabled]}
+              onPress={handlePlayPause}
+              disabled={ttsLoading || !audioRef.current}
+            >
+              <Text style={styles.playerPlayBtnText}>
+                {ttsLoading ? '...' : isPlaying ? '\u275A\u275A' : settingsChanged ? '\u21BB' : '\u25B6'}
+              </Text>
+            </Pressable>
+            <View style={styles.playerProgressWrap}>
+              <Slider
+                style={styles.playerSlider}
+                minimumValue={0}
+                maximumValue={1}
+                value={audioProgress}
+                onSlidingComplete={handleSeek}
+                minimumTrackTintColor="#FFFFFF"
+                maximumTrackTintColor="#333333"
+                thumbTintColor="#FFFFFF"
+                disabled={ttsLoading || !audioRef.current}
+              />
+              <View style={styles.playerTimeRow}>
+                <Text style={styles.playerTimeText}>{formatTime(audioCurrentTime)}</Text>
+                <Text style={styles.playerTimeText}>{formatTime(audioDuration)}</Text>
+              </View>
+            </View>
+            <Pressable style={styles.playerCloseBtn} onPress={handleStopTTS}>
+              <Text style={styles.playerCloseBtnText}>{'\u2715'}</Text>
+            </Pressable>
+          </View>
+
+          {/* Row 2: settings chips — disabled while playing/loading */}
+          <View style={styles.playerChipsRow}>
+            <Pressable
+              style={[styles.playerChip, ttsLocked && styles.playerChipDisabled]}
+              onPress={() => { if (!ttsLocked) setShowVoicePicker(true); }}
+              disabled={ttsLocked}
+            >
+              <Text style={[styles.playerChipText, ttsLocked && styles.playerChipTextDisabled]}>
+                {selectedVoiceLabel}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.playerChip, ttsLocked && styles.playerChipDisabled]}
+              onPress={() => { if (!ttsLocked) setShowVoicePicker(true); }}
+              disabled={ttsLocked}
+            >
+              <Text style={[styles.playerChipText, ttsLocked && styles.playerChipTextDisabled]}>
+                {selectedVoice}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.playerChip,
+                selectedEngine === 'Azure' && !ttsLocked && styles.playerChipPremium,
+                ttsLocked && styles.playerChipDisabled,
+              ]}
+              onPress={() => { if (!ttsLocked) setShowVoicePicker(true); }}
+              disabled={ttsLocked}
+            >
+              <Text style={[
+                styles.playerChipText,
+                selectedEngine === 'Azure' && !ttsLocked && styles.playerChipTextPremium,
+                ttsLocked && styles.playerChipTextDisabled,
+              ]}>
+                {selectedEngine === 'Azure' ? 'Premium' : 'Standard'}
+              </Text>
+            </Pressable>
+            {ttsLocked && isPlaying && (
+              <Text style={styles.playerLockHint}>Pause to change settings</Text>
+            )}
+            {settingsChanged && !isPlaying && !ttsLoading && (
+              <Text style={styles.playerLockHint}>Press play to regenerate</Text>
+            )}
+          </View>
+        </View>
+      )}
+
+      {/* TTS Settings modal */}
+      <Modal
+        visible={showVoicePicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowVoicePicker(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowVoicePicker(false)}>
+          <View style={styles.voicePickerPanel} onStartShouldSetResponder={() => true}>
+            <Text style={styles.voicePickerTitle}>TTS Settings</Text>
+
+            {/* Engine selection */}
+            <View style={styles.voicePickerSection}>
+              <Text style={styles.voicePickerSectionTitle}>Engine</Text>
+              {TTS_ENGINES.map((engine) => (
+                <Pressable
+                  key={engine}
+                  style={[
+                    styles.voiceOption,
+                    engine === selectedEngine && styles.voiceOptionSelected,
+                  ]}
+                  onPress={() => setSelectedEngine(engine)}
+                >
+                  <Text
+                    style={[
+                      styles.voiceOptionText,
+                      engine === selectedEngine && styles.voiceOptionTextSelected,
+                    ]}
+                  >
+                    {engine === 'Piper' ? 'Standard (Piper)' : 'Premium (Azure)'}
+                    {engine === 'Azure' ? <Text style={styles.premiumBadge}> PREMIUM</Text> : null}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {/* Voice selection */}
+            <View style={styles.voicePickerSection}>
+              <Text style={styles.voicePickerSectionTitle}>Voice</Text>
+              <ScrollView style={styles.voiceListScroll} nestedScrollEnabled>
+                {Object.entries(currentVoiceMap).map(([vId, label]) => (
+                  <Pressable
+                    key={vId}
+                    style={[
+                      styles.voiceOption,
+                      vId === selectedVoiceId && styles.voiceOptionSelected,
+                    ]}
+                    onPress={() => setSelectedVoiceId(vId)}
+                  >
+                    <Text
+                      style={[
+                        styles.voiceOptionText,
+                        vId === selectedVoiceId && styles.voiceOptionTextSelected,
+                      ]}
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+                ))}
+                {Object.keys(currentVoiceMap).length === 0 && (
+                  <Text style={styles.voiceOptionText}>No voices available</Text>
+                )}
+              </ScrollView>
+            </View>
+
+            {/* Speed selection */}
+            <View style={styles.voicePickerSection}>
+              <Text style={styles.voicePickerSectionTitle}>Speed</Text>
+              {TTS_VOICES.map((v) => (
+                <Pressable
+                  key={v}
+                  style={[
+                    styles.voiceOption,
+                    v === selectedVoice && styles.voiceOptionSelected,
+                  ]}
+                  onPress={() => setSelectedVoice(v)}
+                >
+                  <Text
+                    style={[
+                      styles.voiceOptionText,
+                      v === selectedVoice && styles.voiceOptionTextSelected,
+                    ]}
+                  >
+                    {v}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {/* Done button */}
+            <Pressable
+              style={styles.voicePickerDone}
+              onPress={() => setShowVoicePicker(false)}
+            >
+              <Text style={styles.voicePickerDoneText}>Done</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -942,7 +1523,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingTop: 60,
     paddingHorizontal: 24,
-    paddingBottom: 120,
+    paddingBottom: 180,
     backgroundColor: '#000000',
     alignItems: 'center',
   },
@@ -1236,7 +1817,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 16,
-    paddingVertical: 16,
+    paddingVertical: 12,
     paddingHorizontal: 24,
     backgroundColor: '#000000',
     borderTopWidth: 1,
@@ -1319,6 +1900,174 @@ const styles = StyleSheet.create({
     color: '#CCCCCC',
     fontSize: 14,
   },
+  // ── TTS Player Bar ──
+  playerBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 56,
+    backgroundColor: '#0A0A0A',
+    borderTopWidth: 1,
+    borderTopColor: '#1A1A1A',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  playerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  playerPlayBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playerPlayBtnDisabled: {
+    backgroundColor: '#333333',
+  },
+  playerPlayBtnText: {
+    color: '#000000',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  playerProgressWrap: {
+    flex: 1,
+  },
+  playerSlider: {
+    width: '100%',
+    height: 24,
+  },
+  playerTimeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: -4,
+    paddingHorizontal: 2,
+  },
+  playerTimeText: {
+    color: '#666666',
+    fontSize: 11,
+  },
+  playerCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#1A1A1A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playerCloseBtnText: {
+    color: '#888888',
+    fontSize: 14,
+  },
+  playerChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  playerChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: '#333333',
+  },
+  playerChipDisabled: {
+    opacity: 0.35,
+  },
+  playerChipPremium: {
+    borderColor: '#FFD700',
+  },
+  playerChipText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  playerChipTextDisabled: {
+    color: '#666666',
+  },
+  playerChipTextPremium: {
+    color: '#FFD700',
+  },
+  playerLockHint: {
+    color: '#555555',
+    fontSize: 11,
+    marginLeft: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  voicePickerPanel: {
+    width: 280,
+    backgroundColor: '#111111',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#222222',
+  },
+  voicePickerTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  voicePickerSection: {
+    marginBottom: 12,
+  },
+  voicePickerSectionTitle: {
+    color: '#888888',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+  voiceListScroll: {
+    maxHeight: 160,
+  },
+  voicePickerDone: {
+    marginTop: 4,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+  },
+  voicePickerDoneText: {
+    color: '#111111',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  voiceOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  voiceOptionSelected: {
+    backgroundColor: '#FFFFFF',
+  },
+  voiceOptionText: {
+    color: '#CCCCCC',
+    fontSize: 14,
+  },
+  voiceOptionTextSelected: {
+    color: '#111111',
+    fontWeight: '600',
+  },
+  premiumBadge: {
+    color: '#FFD700',
+    fontSize: 11,
+    fontWeight: '600',
+    marginLeft: 6,
+  },
   swipeZone: {
     position: 'absolute',
     right: 0,
@@ -1367,5 +2116,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 6,
     lineHeight: 16,
+  },
+  pageImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  imagePlaceholder: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 16,
+    backgroundColor: '#1A1A1A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imagePlaceholderText: {
+    color: '#888888',
+    fontSize: 13,
   },
 });

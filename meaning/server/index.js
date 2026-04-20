@@ -1,20 +1,18 @@
-require("dotenv").config({ path: "./server/key.env" });
+require("dotenv").config({ path: require("node:path").resolve(__dirname, "key.env") });
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const express = require('express');
 const multer = require('multer');
 const { PDFParse } = require('pdf-parse');
-//const OpenAI = require("openai");
-
+const OpenAI = require("openai");
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 const port = process.env.PORT || 5050;
-/**console.log("API KEY LOADED:", process.env.OPENAI_API_KEY ? "YES" : "NO");
-//console.log("Working directory:", process.cwd());
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});**/
+
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
 
 app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => {
@@ -54,14 +52,12 @@ app.post('/parse', upload.single('file'), async (req, res) => {
       });
     }
 
-    const parser = new PDFParse({ data: buffer });
-    const result = await parser.getText();
-    await parser.destroy();
+    const result = await pdfParse(buffer);
     const limit = Number.parseInt(req.query.limit ?? '', 10);
     const text = Number.isFinite(limit) && limit > 0 ? result.text.slice(0, limit) : result.text;
 
     res.json({
-      pages: result.total ?? result.numpages ?? null,
+      pages: result.numpages ?? null,
       text,
     });
   } catch (error) {
@@ -69,41 +65,31 @@ app.post('/parse', upload.single('file'), async (req, res) => {
   }
 });
 
-/**app.post("/generate-image", async (req, res) => {
+app.post("/generate-image", async (req, res) => {
+  if (!openai) {
+    return res.status(503).json({ error: "NO_API_KEY" });
+  }
+
   try {
     const { prompt } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: "prompt is required" });
+    }
 
     const response = await openai.images.generate({
-      model: "gpt-image-1",
-      prompt: prompt,
-      size: "1024x1024"
-    });
-    const response = await fetch(
-    'https://gateway.pixazo.ai/studio-ghibli/v1/studio-ghibli/generate',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Ocp-Apim-Subscription-Key': process.env.PIXAZO_API_KEY
-      },
-      body: JSON.stringify({
-        prompt: prompt
-      })
-    }
-    );
-    const result = await response.json();
-    console.log(result);
-    const base64Image = response.data[0].base64Image;
-    console.log(base64Image);
-    res.json({
-      image: `data:image/png;base64,${base64Image}`
+      model: "dall-e-2",
+      prompt: prompt.slice(0, 1000),
+      n: 1,
+      size: "256x256",
+      response_format: "url",
     });
 
+    res.json({ url: response.data[0].url });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Image generation failed" });
   }
-});**/
+});
 
 
 app.listen(port, () => {
