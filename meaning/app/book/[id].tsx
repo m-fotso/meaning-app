@@ -15,7 +15,6 @@ import {
   PanResponderGestureState,
   PanResponderInstance,
   Platform,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
