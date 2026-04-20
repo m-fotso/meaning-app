@@ -30,6 +30,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/parse', upload.single('file'), async (req, res) => {
+  let parser = null;
   try {
     let buffer;
 
@@ -52,16 +53,27 @@ app.post('/parse', upload.single('file'), async (req, res) => {
       });
     }
 
-    const result = await pdfParse(buffer);
+    // pdf-parse v2: class-based API (v1 used pdf(buffer) promise)
+    parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
     const limit = Number.parseInt(req.query.limit ?? '', 10);
     const text = Number.isFinite(limit) && limit > 0 ? result.text.slice(0, limit) : result.text;
 
     res.json({
-      pages: result.numpages ?? null,
+      pages: result.total ?? null,
       text,
     });
   } catch (error) {
+    console.error('[parse]', error);
     res.status(500).json({ error: error?.message ?? 'Failed to parse PDF.' });
+  } finally {
+    if (parser) {
+      try {
+        await parser.destroy();
+      } catch (_) {
+        /* ignore cleanup errors */
+      }
+    }
   }
 });
 
