@@ -24,6 +24,7 @@ import {
 } from 'react-native';
 import { getBook, updateBook } from '../../services/bookService';
 import { auth } from '../../services/firebaseConfig';
+import { generateImageForPageText } from '../../services/imageGenerationService';
 
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -52,6 +53,10 @@ export default function BookDetailScreen() {
   const [notesLoading, setNotesLoading] = useState(false);
   const currentAnnotations = annotationsByPage[currentPage] ?? [];
   const [showChapterNote, setShowChapterNote] = useState(false);
+  const [generatedImageUrisByPage, setGeneratedImageUrisByPage] = useState<Record<number, string>>({});
+  const [imageStatusByPage, setImageStatusByPage] = useState<
+    Record<number, 'loading' | 'generated' | 'placeholder'>
+  >({});
 
   // Swipe and animation refs
   const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
@@ -137,6 +142,8 @@ export default function BookDetailScreen() {
         setCurrentPage(0);
         setAnnotationsByPage({});
         setRangeHighlightsByPage({});
+        setGeneratedImageUrisByPage({});
+        setImageStatusByPage({});
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load PDF text.');
       } finally {
@@ -204,6 +211,39 @@ export default function BookDetailScreen() {
     }, 200);
     return () => clearInterval(intervalId);
   }, [loading, startTime]);
+
+  useEffect(() => {
+    const pageText = pages[currentPage];
+    if (!pageText) {
+      return;
+    }
+
+    const status = imageStatusByPage[currentPage];
+    if (status === 'generated' || status === 'placeholder' || status === 'loading') {
+      return;
+    }
+
+    let isCancelled = false;
+    setImageStatusByPage((prev) => ({ ...prev, [currentPage]: 'loading' }));
+
+    generateImageForPageText(pageText).then((imageUri) => {
+      if (isCancelled) {
+        return;
+      }
+
+      if (imageUri) {
+        setGeneratedImageUrisByPage((prev) => ({ ...prev, [currentPage]: imageUri }));
+        setImageStatusByPage((prev) => ({ ...prev, [currentPage]: 'generated' }));
+        return;
+      }
+
+      setImageStatusByPage((prev) => ({ ...prev, [currentPage]: 'placeholder' }));
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentPage, imageStatusByPage, pages]);
 
   // Animation effect for menu slide-in/out
   useEffect(() => {
@@ -436,6 +476,9 @@ export default function BookDetailScreen() {
   const currentPageSegments = displayItems
     .filter((x): x is { type: 'segment'; index: number; text: string } => x.type === 'segment')
     .map((x) => x.text);
+  const placeholderImageUri = `https://picsum.photos/seed/page-${currentPage}/800/450`;
+  const pageImageUri = generatedImageUrisByPage[currentPage] ?? placeholderImageUri;
+  const pageImageStatus = imageStatusByPage[currentPage] ?? 'loading';
 
   // Get disjoint (start, end, id, text) ranges for a segment from range highlights (exact substring matches)
   const getHighlightRangesForSegment = useCallback(
@@ -598,12 +641,22 @@ export default function BookDetailScreen() {
           <View style={styles.pageList}>
             <View style={styles.pageContent}>
               <Image
-                source={{ uri: `https://picsum.photos/seed/page-${currentPage}/800/450` }}
+                source={{ uri: pageImageUri }}
                 style={styles.pagePlaceholderImage}
                 resizeMode="cover"
-                accessibilityLabel="Placeholder illustration for this page"
+                accessibilityLabel={
+                  pageImageStatus === 'generated'
+                    ? 'AI-generated illustration for this page'
+                    : 'Placeholder illustration for this page'
+                }
               />
-              <Text style={styles.pagePlaceholderCaption}>Illustration (placeholder)</Text>
+              <Text style={styles.pagePlaceholderCaption}>
+                {pageImageStatus === 'generated'
+                  ? 'Illustration (generated from page text)'
+                  : pageImageStatus === 'loading'
+                    ? 'Illustration (generating, placeholder shown if unavailable)'
+                    : 'Illustration (placeholder fallback)'}
+              </Text>
               {renderText(pages[currentPage])}
             </View>
             <Text style={styles.pageIndicator}>
