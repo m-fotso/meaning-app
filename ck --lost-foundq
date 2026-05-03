@@ -1,0 +1,38 @@
+[33mc099fe0[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mdeliverable3-roselyn[m[33m)[m HEAD@{0}: commit (merge): manuallly merge json
+[33mb6b7c38[m[33m ([m[1;31morigin/deliverable3-roselyn[m[33m)[m HEAD@{1}: reset: moving to HEAD
+[33mb6b7c38[m[33m ([m[1;31morigin/deliverable3-roselyn[m[33m)[m HEAD@{2}: checkout: moving from main to deliverable3-roselyn
+[33m8a5e080[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{3}: reset: moving to HEAD
+[33m8a5e080[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{4}: reset: moving to HEAD
+[33m8a5e080[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{5}: checkout: moving from deliverable3-roselyn to main
+[33mb6b7c38[m[33m ([m[1;31morigin/deliverable3-roselyn[m[33m)[m HEAD@{6}: checkout: moving from main to deliverable3-roselyn
+[33m8a5e080[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{7}: reset: moving to HEAD
+[33m8a5e080[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{8}: pull: Fast-forward
+[33mc68ce24[m[33m ([m[1;31morigin/john[m[33m)[m HEAD@{9}: reset: moving to HEAD~1
+[33m9d95c80[m HEAD@{10}: checkout: moving from deliverable3-roselyn to main
+[33mb6b7c38[m[33m ([m[1;31morigin/deliverable3-roselyn[m[33m)[m HEAD@{11}: checkout: moving from main to deliverable3-roselyn
+[33m9d95c80[m HEAD@{12}: reset: moving to HEAD
+[33m9d95c80[m HEAD@{13}: checkout: moving from deliverable3-roselyn to main
+[33mb6b7c38[m[33m ([m[1;31morigin/deliverable3-roselyn[m[33m)[m HEAD@{14}: checkout: moving from main to deliverable3-roselyn
+[33m9d95c80[m HEAD@{15}: commit: add changes before renaming branch to move on due to redudant code/features
+[33mc68ce24[m[33m ([m[1;31morigin/john[m[33m)[m HEAD@{16}: reset: moving to HEAD
+[33mc68ce24[m[33m ([m[1;31morigin/john[m[33m)[m HEAD@{17}: pull: Fast-forward
+[33m7bb5337[m HEAD@{18}: checkout: moving from deliverable3-roselyn to main
+[33mb6b7c38[m[33m ([m[1;31morigin/deliverable3-roselyn[m[33m)[m HEAD@{19}: checkout: moving from john to deliverable3-roselyn
+[33m4ed10bd[m[33m ([m[1;32mjohn[m[33m)[m HEAD@{20}: checkout: moving from deliverable3-roselyn to john
+[33mb6b7c38[m[33m ([m[1;31morigin/deliverable3-roselyn[m[33m)[m HEAD@{21}: commit (merge): create another branch from main to add in annotation menu + firebase, will try to integrate parsing parts too
+[33m7bb5337[m HEAD@{22}: checkout: moving from main to deliverable3-roselyn
+[33m7bb5337[m HEAD@{23}: checkout: moving from deliverable2-roselyn to main
+[33m2619e5e[m[33m ([m[1;31morigin/deliverable2-roselyn[m[33m, [m[1;32mdeliverable2-roselyn[m[33m)[m HEAD@{24}: checkout: moving from main to deliverable2-roselyn
+[33m7bb5337[m HEAD@{25}: checkout: moving from deliverable2-roselyn to main
+[33m2619e5e[m[33m ([m[1;31morigin/deliverable2-roselyn[m[33m, [m[1;32mdeliverable2-roselyn[m[33m)[m HEAD@{26}: reset: moving to HEAD
+[33m2619e5e[m[33m ([m[1;31morigin/deliverable2-roselyn[m[33m, [m[1;32mdeliverable2-roselyn[m[33m)[m HEAD@{27}: reset: moving to HEAD
+[33m2619e5e[m[33m ([m[1;31morigin/deliverable2-roselyn[m[33m, [m[1;32mdeliverable2-roselyn[m[33m)[m HEAD@{28}: commit: created reader page with annotation menu
+[33meffa5f5[m HEAD@{29}: pull origin leo-branch: Fast-forward
+[33m665d8c5[m HEAD@{30}: reset: moving to HEAD
+[33m665d8c5[m HEAD@{31}: checkout: moving from deliverable2-roselyn to deliverable2-roselyn
+[33m665d8c5[m HEAD@{32}: checkout: moving from main to deliverable2-roselyn
+[33m7bb5337[m HEAD@{33}: pull: Fast-forward
+[33m665d8c5[m HEAD@{34}: reset: moving to HEAD
+[33m665d8c5[m HEAD@{35}: checkout: moving from deliverable2-roselyn to main
+[33m665d8c5[m HEAD@{36}: checkout: moving from main to deliverable2-roselyn
+[33m665d8c5[m HEAD@{37}: clone: from https://github.com/m-fotso/meaning-app.git
