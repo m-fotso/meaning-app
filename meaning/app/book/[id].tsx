@@ -1,19 +1,15 @@
 import { ChapterNote } from '@/components/chapterNote';
 import { useAuth } from '@/context/AuthContext';
-import { getNotesForBook, Note } from '@/services/notesService';
+import { deleteNote, getNotesForBook, Note, saveNote } from '@/services/notesService';
 import Slider from '@react-native-community/slider';
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Animated,
   Dimensions,
   Image,
   Linking,
   Modal,
-  PanResponder,
-  PanResponderGestureState,
-  PanResponderInstance,
   Platform,
   Pressable,
   ScrollView,
@@ -77,10 +73,7 @@ export default function BookDetailScreen() {
     Record<number, 'loading' | 'generated' | 'placeholder'>
   >({});
 
-  // Swipe and animation refs
-  const menuAnimRef = useRef<Animated.Value>(new Animated.Value(0)).current;
-  const panResponderRef = useRef<PanResponderInstance | null>(null);
-  /// Chapter detection from page text
+/// Chapter detection from page text
   const getNewestChapterPage = (pages: string[]): number => {
     let newestPage = -1;
 
@@ -571,15 +564,6 @@ export default function BookDetailScreen() {
     };
   }, [currentPage, imageStatusByPage, pages]);
 
-  // Animation effect for menu slide-in/out
-  useEffect(() => {
-    Animated.timing(menuAnimRef, {
-      toValue: showAnnotations ? 1 : 0,
-      duration: 250,
-      useNativeDriver: true,
-    }).start();
-  }, [showAnnotations, menuAnimRef]);
-
   // Fetch notes from service
   useEffect(() => {
     if (initializing) {
@@ -597,6 +581,10 @@ export default function BookDetailScreen() {
       if (!mounted) return;
       if (result.success && result.notes) {
         setFetchedNotes(result.notes);
+        const highlights = result.notes
+          .filter((n) => !n.userNote)
+          .map((n) => ({ id: n.id, text: n.highlightedText }));
+        setRangeHighlightsByPage((prev) => ({ ...prev, [currentPage]: highlights }));
       } else {
         console.error('Failed to fetch notes:', result.error);
         setFetchedNotes([]);
@@ -609,75 +597,6 @@ export default function BookDetailScreen() {
       mounted = false;
     };
   }, [user, initializing, id, currentPage]);
-
-  // Initialize PanResponder for left-swipe detection
-  useEffect(() => {
-    panResponderRef.current = PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
-        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
-      },
-      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
-        if (gestureState.dx < -50) {
-          setShowAnnotations(true);
-        }
-      },
-    });
-  }, []);
-
-  // Animation effect for menu slide-in/out
-  useEffect(() => {
-    Animated.timing(menuAnimRef, {
-      toValue: showAnnotations ? 1 : 0,
-      duration: 250,
-      useNativeDriver: true,
-    }).start();
-  }, [showAnnotations, menuAnimRef]);
-
-  // Fetch notes from service
-  useEffect(() => {
-    if (initializing) {
-      return;
-    }
-    if (!user || !id) {
-      setFetchedNotes([]);
-      return;
-    }
-
-    let mounted = true;
-    const fetchNotes = async () => {
-      setNotesLoading(true);
-      const result = await getNotesForBook(user.uid, String(id), currentPage);
-      if (!mounted) return;
-      if (result.success && result.notes) {
-        setFetchedNotes(result.notes);
-      } else {
-        console.error('Failed to fetch notes:', result.error);
-        setFetchedNotes([]);
-      }
-      setNotesLoading(false);
-    };
-    fetchNotes();
-
-    return () => {
-      mounted = false;
-    };
-  }, [user, initializing, id, currentPage]);
-
-  // Initialize PanResponder for left-swipe detection
-  useEffect(() => {
-    panResponderRef.current = PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_evt, gestureState: PanResponderGestureState) => {
-        return Math.abs(gestureState.dx) > 6 && Math.abs(gestureState.dy) < 30;
-      },
-      onPanResponderRelease: (_evt, gestureState: PanResponderGestureState) => {
-        if (gestureState.dx < -50) {
-          setShowAnnotations(true);
-        }
-      },
-    });
-  }, []);
 
   //find current page and chapter
   useEffect(() => {
@@ -760,19 +679,29 @@ export default function BookDetailScreen() {
     [splitLineIntoSegments]
   );
 
-  const addRangeHighlight = (text: string) => {
-    const id = `hl-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const addRangeHighlight = async (text: string) => {
+    if (!user || !id) return;
+    const result = await saveNote(user.uid, {
+      bookId: String(id),
+      chapter: currentPage,
+      pageNumber: currentPage,
+      highlightedText: text,
+    });
+    if (!result.success || !result.noteId) return;
     setRangeHighlightsByPage((prev) => ({
       ...prev,
-      [currentPage]: [...(prev[currentPage] ?? []), { id, text }],
+      [currentPage]: [...(prev[currentPage] ?? []), { id: result.noteId!, text }],
     }));
     setSelectionPopup(null);
   };
 
-  const removeRangeHighlight = (id: string) => {
+  const removeRangeHighlight = async (highlightId: string) => {
+    if (user) {
+      await deleteNote(user.uid, highlightId);
+    }
     setRangeHighlightsByPage((prev) => ({
       ...prev,
-      [currentPage]: (prev[currentPage] ?? []).filter((h) => h.id !== id),
+      [currentPage]: (prev[currentPage] ?? []).filter((h) => h.id !== highlightId),
     }));
     setSelectionPopup(null);
   };
@@ -964,10 +893,6 @@ export default function BookDetailScreen() {
 
   return (
     <View style={styles.screen}>
-      {/* Right-edge invisible swipe zone for gesture detection */}
-      {panResponderRef.current && (
-        <View style={styles.swipeZone} {...panResponderRef.current.panHandlers} />
-      )}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.container}
@@ -1006,7 +931,7 @@ export default function BookDetailScreen() {
             {(() => {
               const img = imagesByPage[currentPage];
               if (img === 'NO_API_KEY') {
-                return <View style={styles.imagePlaceholder}><Text style={styles.imagePlaceholderText}>API key not configured</Text></View>;
+                return null;
               }
               if (img === 'ERROR') {
                 return null;
@@ -1058,20 +983,10 @@ export default function BookDetailScreen() {
         <>
           <Pressable style={styles.overlay} onPress={() => setShowAnnotations(false)} />
           <View style={styles.annotationsOverlay}>
-            <Animated.View
+            <View
               style={[
                 styles.annotationsPanel,
-                {
-                  width: MENU_WIDTH,
-                  transform: [
-                    {
-                      translateX: menuAnimRef.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [MENU_WIDTH, 0],
-                      }),
-                    },
-                  ],
-                },
+                { width: MENU_WIDTH },
               ]}
             >
               <View style={styles.annotationsHeader}>
@@ -1190,7 +1105,7 @@ export default function BookDetailScreen() {
                   thumbTintColor="#FFFFFF"
                 />
               </View>
-            </Animated.View>
+            </View>
           </View>
         </>
       ) : null}
@@ -1593,6 +1508,7 @@ const styles = StyleSheet.create({
     paddingBottom: 96,
     paddingRight: 16,
     justifyContent: 'flex-start',
+    zIndex: 951,
   },
   annotationsPanel: {
     flex: 1,
