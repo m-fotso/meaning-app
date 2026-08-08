@@ -68,10 +68,39 @@ def _scan_piper_voices() -> dict[str, str]:
     return voices
 
 
+_PIPER_HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+_PIPER_MODEL_PATHS = {
+    "en_US-lessac-medium": "en/en_US/lessac/medium/en_US-lessac-medium",
+}
+
+
+def _ensure_piper_model(model_name: str) -> None:
+    """Download model files from Hugging Face if not already present."""
+    hf_path = _PIPER_MODEL_PATHS.get(model_name)
+    if not hf_path:
+        return  # unknown model, let caller handle missing file
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    for suffix in (".onnx", ".onnx.json"):
+        dest = os.path.join(MODEL_DIR, f"{model_name}{suffix}")
+        if os.path.exists(dest):
+            continue
+        url = f"{_PIPER_HF_BASE}/{hf_path}{suffix}"
+        print(f"Downloading Piper model file: {url}")
+        resp = requests.get(url, stream=True, timeout=120)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print(f"Saved {dest}")
+
+
 def _get_piper_voice(model_name: str) -> PiperVoice:
     """Load a Piper voice model by name, using cache."""
     if model_name in _piper_cache:
         return _piper_cache[model_name]
+
+    _ensure_piper_model(model_name)
 
     model_path = os.path.join(MODEL_DIR, f"{model_name}.onnx")
     if not os.path.exists(model_path):
@@ -86,8 +115,8 @@ def _get_piper_voice(model_name: str) -> PiperVoice:
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"
 try:
     _get_piper_voice(DEFAULT_PIPER_VOICE)
-except FileNotFoundError:
-    print(f"Warning: default Piper model '{DEFAULT_PIPER_VOICE}' not found in {MODEL_DIR}")
+except Exception as e:
+    print(f"Warning: could not load default Piper model '{DEFAULT_PIPER_VOICE}': {e}")
 
 
 SPEED_MAP = {
